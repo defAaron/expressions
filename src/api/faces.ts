@@ -1,5 +1,10 @@
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import sharp from "sharp";
 import type { Manifest } from "../contract/manifest";
+import { createMediaPipeDetector, cropToSmile } from "../locker/crop";
 import { createMagicHourClient } from "../magic-hour/client";
 import { assertRecipePresent } from "../magic-hour/recipe-gate";
 import { parseRecipe, type Recipe } from "../recipe/recipe";
@@ -305,7 +310,11 @@ export type FaceApiDeps = {
   readRecipe: () => string | undefined;
   parseRecipe: typeof parseRecipe;
   baseUrl: string;
-  prepare: (bytes: Buffer, mediaType: string) => PrepareResult;
+  prepare: (
+    bytes: Buffer,
+    mediaType: string,
+    faceId: string,
+  ) => PrepareResult | Promise<PrepareResult>;
   rateLimit: IpRateLimiter;
   newFaceId: () => string;
   runWorker: (input: {
@@ -316,20 +325,98 @@ export type FaceApiDeps = {
   createClient: typeof createMagicHourClient;
 };
 
+const sharedFaceStore = createInMemoryFaceStore();
+
+function isFaceModelMissingError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes("Face landmarker model is absent");
+}
+
 function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
-  const store = createInMemoryFaceStore();
-  return {
+  const store = overrides?.store ?? sharedFaceStore;
+  const deps: FaceApiDeps = {
     store,
-    readRecipe: () => undefined,
+    readRecipe: () => {
+      const recipePath = path.join(process.cwd(), "recipes", "v1.json");
+      try {
+        return readFileSync(recipePath, "utf8");
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error as { code?: string }).code === "ENOENT"
+        ) {
+          return undefined;
+        }
+        throw error;
+      }
+    },
     parseRecipe,
-    baseUrl: "https://app.example",
-    prepare: () => ({ ok: false, error: "not_implemented" }),
+    baseUrl:
+      process.env.NEXT_PUBLIC_APP_ORIGIN?.replace(/\/$/, "") ??
+      (process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "http://localhost:3456"),
+    prepare: async (bytes, mediaType, faceId) => {
+      try {
+        const detect = createMediaPipeDetector();
+        const cropped = await cropToSmile(
+          { bytes: new Uint8Array(bytes), mediaType },
+          detect,
+        );
+        if (!cropped.ok) {
+          return { ok: false, error: cropped.rejection.code };
+        }
+        const smileRel = bundlePath(faceId, "smile.webp");
+        const smileAbs = path.join(process.cwd(), smileRel);
+        await mkdir(path.dirname(smileAbs), { recursive: true });
+        await sharp(Buffer.from(cropped.image.data), {
+          raw: {
+            width: cropped.image.width,
+            height: cropped.image.height,
+            channels: 4,
+          },
+        })
+          .webp()
+          .toFile(smileAbs);
+        const sourceRel = sourcePath(faceId);
+        const sourceAbs = path.join(process.cwd(), sourceRel);
+        await mkdir(path.dirname(sourceAbs), { recursive: true });
+        await writeFile(sourceAbs, bytes);
+        return { ok: true, smilePath: smileRel };
+      } catch (error) {
+        if (isFaceModelMissingError(error)) {
+          return { ok: false, error: "face_model_missing" };
+        }
+        throw error;
+      }
+    },
     rateLimit: new IpRateLimiter(10, 60_000),
     newFaceId: () => randomBytes(16).toString("hex"),
-    runWorker: async () => {},
+    runWorker: async ({ faceId, apiKey, plates }) => {
+      const recipeBody = deps.readRecipe();
+      if (!recipeBody) return;
+      const recipe = deps.parseRecipe(JSON.parse(recipeBody));
+      const client = deps.createClient(apiKey);
+      const lockToken = randomBytes(16).toString("hex");
+      await runFace({
+        faceId,
+        store: deps.store,
+        client,
+        recipe,
+        apiKey,
+        lockToken,
+        plates,
+      });
+    },
     createClient: createMagicHourClient,
     ...overrides,
   };
+  if (overrides?.store) {
+    deps.store = overrides.store;
+  }
+  return deps;
 }
 
 function recipeCheck(
@@ -377,7 +464,8 @@ export function createFaceHandlers() {
       }
 
       const bytes = Buffer.from(await file.arrayBuffer());
-      const prepared = deps.prepare(bytes, mediaType);
+      const id = deps.newFaceId();
+      const prepared = await deps.prepare(bytes, mediaType, id);
       if (!prepared.ok) {
         return json({ error: prepared.error }, 400);
       }
@@ -391,8 +479,6 @@ export function createFaceHandlers() {
       if (!recipeOutcome.ok) {
         return recipeOutcome.response;
       }
-
-      const id = deps.newFaceId();
       await deps.store.createFace({
         id,
         sourcePath: sourcePath(id),
