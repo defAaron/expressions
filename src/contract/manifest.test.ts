@@ -5,6 +5,7 @@ import {
   GAZE_HALF,
   GAZE_SHUT,
   parseManifest,
+  type Manifest,
 } from "./manifest";
 
 const validManifest = {
@@ -21,7 +22,7 @@ const validManifest = {
     curious: "curious.webp",
     pain: "pain.webp",
     nausea: "nausea.webp",
-  },
+  } as Manifest["plates"],
   gaze: {
     sheet: "gaze.webp",
     cols: 5,
