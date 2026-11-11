@@ -15,7 +15,11 @@ export default function Page() {
   return (
     <main>
       <h1>Expressions</h1>
-      <expressions-face src="/demo/manifest.json" alt="Demo face" />
+      <expressions-face
+        src="/demo/manifest.json"
+        alt="Demo face"
+        style={{ display: "block", width: "min(100%, 320px)" }}
+      />
       <UploadForm />
     </main>
   );

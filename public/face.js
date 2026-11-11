@@ -25,8 +25,17 @@
     return Date.now();
   }
 
+  function absoluteUrl(url) {
+    try {
+      return new URL(url).href;
+    } catch (e) {
+      var loc = (global.location && global.location.href) || "http://localhost/";
+      return new URL(url, loc).href;
+    }
+  }
+
   function resolveUrl(relative, manifestUrl) {
-    return new URL(relative, manifestUrl).href;
+    return new URL(relative, absoluteUrl(manifestUrl)).href;
   }
 
   function manifestDirectory(manifestUrl) {
@@ -37,7 +46,7 @@
   }
 
   function collectFetchUrls(manifest, manifestUrl) {
-    var urls = [manifestUrl];
+    var urls = [absoluteUrl(manifestUrl)];
     var base = manifestUrl;
     var plates = manifest.plates || {};
     for (var k in plates) {
@@ -676,12 +685,11 @@
           return r.json();
         })
         .then(function (manifest) {
+          self._img = mountImages(btn, manifest, src, function () {});
           var urls = collectFetchUrls(manifest, src);
           var allowed = allowedOrigins(urls);
           self._fetchGuard = createFetchGuard(allowed);
           var guarded = self._fetchGuard;
-
-          self._img = mountImages(btn, manifest, src, function () {});
           btn.setAttribute(
             "aria-label",
             self.getAttribute("alt") || manifest.alt || "face",
