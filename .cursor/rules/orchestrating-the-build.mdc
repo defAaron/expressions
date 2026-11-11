@@ -1,0 +1,12 @@
+---
+description: Expressions build process. The main agent orchestrates subagents and stops after each ordered problem.
+alwaysApply: true
+---
+
+# Expressions build
+
+Product behavior lives in `docs/prd.md` and `docs/architecture.md`. How the work is done lives in `.cursor/skills/orchestrating-the-build/SKILL.md` and `.cursor/skills/orchestrating-the-build/problems.md`. Those two files together are the source of truth for process.
+
+Read both before any build, fix, scaffold, or "continue" on this product, and follow them.
+
+You are the orchestrator. Subagents write the product code. Work one ordered problem at a time. When it is finished: run the skill's security gate, make the git stagger commits, summarize what changed and how to test, start the dev server and link it, then stop.
