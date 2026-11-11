@@ -13,6 +13,15 @@ describe("upload page", () => {
     expect(html).toContain("Expressions");
   });
 
+  it("renders the demo face and upload form", () => {
+    const html = renderToStaticMarkup(<Page />);
+    expect(html).toContain("expressions-face");
+    expect(html).toContain('/demo/manifest.json"');
+    expect(html).toContain("Demo face");
+    expect(html).toContain('type="file"');
+    expect(html).toMatch(/disabled=""/);
+  });
+
   it("disables upload until likeness is checked", () => {
     const html = renderToStaticMarkup(<UploadForm />);
     expect(html).toContain('type="button"');

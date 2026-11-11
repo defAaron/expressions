@@ -9,6 +9,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body style={{ backgroundColor: "#ffffff", color: "#000000" }}>
+        <script src="/face.js" defer />
         {children}
       </body>
     </html>
