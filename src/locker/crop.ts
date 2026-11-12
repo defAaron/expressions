@@ -410,7 +410,13 @@ type RgbaUpload = {
 };
 
 const canvasGL = new WeakMap<NodeOffscreenCanvas, WebGLRenderingContext>();
+const canvasGL2 = new WeakMap<NodeOffscreenCanvas, object>();
 let webglCreated: WebGLRenderingContext[] | undefined;
+const GL_ALREADY_SIGNALED = 0x911a;
+const RGBA = 0x1908;
+const RGB = 0x1907;
+const DEPTH_COMPONENT = 0x1902;
+const DEPTH_STENCIL = 0x84f9;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -449,9 +455,13 @@ function rgbaBytes(data: Uint8Array | Uint8ClampedArray, needed: number): Uint8A
 
 // detect() calls texImage2D(target, level, internalFormat, format, type, image).
 // Store those pixels with headless-gl's width/height overload; leave every other call on the real context.
-function wrapWebGL(raw: WebGLRenderingContext, canvas: NodeOffscreenCanvas): WebGLRenderingContext {
+function fenceSyncMissing(raw: object): boolean {
+  return typeof (raw as { fenceSync?: unknown }).fenceSync !== "function";
+}
+
+function texImage2DFor(raw: WebGLRenderingContext): (...args: unknown[]) => void {
   const upload = raw.texImage2D.bind(raw) as (...args: unknown[]) => void;
-  const texImage2D = (...args: unknown[]): void => {
+  return (...args: unknown[]): void => {
     if (args.length === 6 && isRgbaUpload(args[5])) {
       const source = args[5];
       upload(
@@ -469,11 +479,27 @@ function wrapWebGL(raw: WebGLRenderingContext, canvas: NodeOffscreenCanvas): Web
     }
     upload(...args);
   };
+}
+
+// headless-gl finishes GL commands before returning and has no fenceSync.
+// A distinct already-signaled sync keeps MediaPipe's producer token non-null.
+function wrapWebGL(raw: WebGLRenderingContext, canvas: NodeOffscreenCanvas): WebGLRenderingContext {
+  const texImage2D = texImage2DFor(raw);
+  const sync = fenceSyncMissing(raw)
+    ? {
+        fenceSync: () => ({}),
+        clientWaitSync: () => GL_ALREADY_SIGNALED,
+        deleteSync: () => undefined,
+      }
+    : null;
 
   return new Proxy(raw, {
     get(target, prop) {
       if (prop === "texImage2D") return texImage2D;
       if (prop === "canvas") return canvas;
+      if (sync && (prop === "fenceSync" || prop === "clientWaitSync" || prop === "deleteSync")) {
+        return sync[prop];
+      }
       const value: unknown = Reflect.get(target, prop, target);
       if (typeof value === "function") return (value as (...args: unknown[]) => unknown).bind(target);
       return value;
@@ -486,7 +512,251 @@ function wrapWebGL(raw: WebGLRenderingContext, canvas: NodeOffscreenCanvas): Web
   });
 }
 
-function publishWebGLConstructor(factory: HeadlessGL, raw: object): void {
+// Context version 2 makes emscripten pass WebGL2 srcOffset/srcLength overloads.
+// headless-gl implements the WebGL 1 forms, so those calls are sliced onto them.
+const UNIFORM_VECTORS = new Set([
+  "uniform1fv",
+  "uniform2fv",
+  "uniform3fv",
+  "uniform4fv",
+  "uniform1iv",
+  "uniform2iv",
+  "uniform3iv",
+  "uniform4iv",
+]);
+const UNIFORM_MATRICES = new Set(["uniformMatrix2fv", "uniformMatrix3fv", "uniformMatrix4fv"]);
+const SIZED_INTERNAL_FORMAT: Record<number, number> = {
+  32849: RGB, // RGB8
+  32854: RGBA, // RGBA4
+  32855: RGBA, // RGB5_A1
+  32856: RGBA, // RGBA8
+  36194: RGB, // RGB565
+  33189: DEPTH_COMPONENT, // DEPTH_COMPONENT16
+  33190: DEPTH_COMPONENT, // DEPTH_COMPONENT24
+  33191: DEPTH_COMPONENT, // DEPTH_COMPONENT32
+  35056: DEPTH_STENCIL, // DEPTH24_STENCIL8
+};
+
+function isBufferView(value: unknown): value is ArrayBufferView {
+  return ArrayBuffer.isView(value);
+}
+
+function viewSlice(data: ArrayBufferView, start: number, length: number): ArrayBufferView {
+  const typed = data as ArrayBufferView & {
+    subarray: (begin: number, end: number) => ArrayBufferView;
+    length: number;
+  };
+  const begin = Math.max(0, start);
+  const end = Math.min(typed.length, begin + Math.max(0, length));
+  return typed.subarray(begin, end);
+}
+
+function webgl1Format(format: number): number {
+  return SIZED_INTERNAL_FORMAT[format] ?? format;
+}
+
+function bytesPerElement(data: ArrayBufferView): number {
+  return (data as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+}
+
+function textureElements(
+  width: number,
+  height: number,
+  format: number,
+  type: number,
+  elementBytes: number,
+  alignment: number,
+): number {
+  const components =
+    format === 0x1906 || format === 0x1909 || format === DEPTH_COMPONENT || format === 0x8229
+      ? 1
+      : format === 0x190a || format === DEPTH_STENCIL || format === 0x822b
+        ? 2
+        : format === RGB || format === 0x8051 || format === 0x8d62
+          ? 3
+          : 4;
+  const packed = type === 0x8363 || type === 0x8033 || type === 0x8034;
+  const typeBytes =
+    type === 0x1406 || type === 0x1404 || type === 0x1405
+      ? 4
+      : type === 0x1402 || type === 0x1403 || type === 0x8d61 || packed
+        ? 2
+        : 1;
+  const rowBytes = packed ? width * 2 : width * components * typeBytes;
+  const align = alignment === 1 || alignment === 2 || alignment === 4 || alignment === 8 ? alignment : 4;
+  const stride = Math.ceil(rowBytes / align) * align;
+  const bytes = height <= 0 ? 0 : stride * (height - 1) + rowBytes;
+  return Math.max(0, Math.ceil(bytes / Math.max(1, elementBytes)));
+}
+
+function packAlignment(gl: WebGLRenderingContext): number {
+  const value = (gl as unknown as { _packAlignment?: unknown })._packAlignment;
+  return typeof value === "number" ? value : 4;
+}
+
+function unpackAlignment(gl: WebGLRenderingContext): number {
+  const value = (gl as unknown as { _unpackAlignment?: unknown })._unpackAlignment;
+  return typeof value === "number" ? value : 4;
+}
+
+function invoke(gl: WebGLRenderingContext, prop: PropertyKey, args: unknown[]): unknown {
+  const fn = (gl as unknown as Record<PropertyKey, unknown>)[prop];
+  if (typeof fn !== "function") {
+    throw new TypeError(`${String(prop)} is not a function`);
+  }
+  return (fn as (...callArgs: unknown[]) => unknown).apply(gl, args);
+}
+
+function callAdapted(gl: WebGLRenderingContext, prop: PropertyKey, args: unknown[]): unknown {
+  if (typeof prop === "string" && prop.startsWith("uniform") && args[0] == null) return undefined;
+  if (typeof prop !== "string") return invoke(gl, prop, args);
+  if (
+    prop === "bufferData" &&
+    args.length === 5 &&
+    isBufferView(args[1]) &&
+    typeof args[3] === "number" &&
+    typeof args[4] === "number"
+  ) {
+    return invoke(gl, prop, [args[0], viewSlice(args[1], args[3], args[4]), args[2]]);
+  }
+  if (
+    prop === "bufferSubData" &&
+    args.length === 5 &&
+    isBufferView(args[2]) &&
+    typeof args[3] === "number" &&
+    typeof args[4] === "number"
+  ) {
+    return invoke(gl, prop, [args[0], args[1], viewSlice(args[2], args[3], args[4])]);
+  }
+  if (
+    UNIFORM_VECTORS.has(prop) &&
+    args.length === 4 &&
+    isBufferView(args[1]) &&
+    typeof args[2] === "number" &&
+    typeof args[3] === "number"
+  ) {
+    return invoke(gl, prop, [args[0], viewSlice(args[1], args[2], args[3])]);
+  }
+  if (
+    UNIFORM_MATRICES.has(prop) &&
+    args.length === 5 &&
+    isBufferView(args[2]) &&
+    typeof args[3] === "number" &&
+    typeof args[4] === "number"
+  ) {
+    return invoke(gl, prop, [args[0], args[1], viewSlice(args[2], args[3], args[4])]);
+  }
+  if (
+    (prop === "texImage2D" || prop === "texSubImage2D") &&
+    args.length === 10 &&
+    isBufferView(args[8]) &&
+    typeof args[9] === "number"
+  ) {
+    const format = webgl1Format(args[6] as number);
+    const type = args[7] as number;
+    const width = (prop === "texImage2D" ? args[3] : args[4]) as number;
+    const height = (prop === "texImage2D" ? args[4] : args[5]) as number;
+    const pixels = viewSlice(
+      args[8],
+      args[9],
+      textureElements(width | 0, height | 0, format, type, bytesPerElement(args[8]), unpackAlignment(gl)),
+    );
+    if (prop === "texImage2D") {
+      return invoke(gl, prop, [
+        args[0],
+        args[1],
+        webgl1Format(args[2] as number),
+        args[3],
+        args[4],
+        args[5],
+        format,
+        type,
+        pixels,
+      ]);
+    }
+    return invoke(gl, prop, [args[0], args[1], args[2], args[3], args[4], args[5], format, type, pixels]);
+  }
+  if (prop === "readPixels" && args.length === 8 && isBufferView(args[6]) && typeof args[7] === "number") {
+    const format = args[4] as number;
+    const type = args[5] as number;
+    const pixels = viewSlice(
+      args[6],
+      args[7],
+      textureElements(
+        args[2] as number,
+        args[3] as number,
+        format,
+        type,
+        bytesPerElement(args[6]),
+        packAlignment(gl),
+      ),
+    );
+    return invoke(gl, prop, [args[0], args[1], args[2], args[3], args[4], args[5], pixels]);
+  }
+  return invoke(gl, prop, args);
+}
+
+// WebGL 2 entry points the landmarker calls that headless-gl does not define.
+const webgl2Missing: Record<string, (gl: WebGLRenderingContext, args: unknown[]) => unknown> = {
+  texStorage2D(gl, args) {
+    const target = args[0];
+    const levels = typeof args[1] === "number" ? args[1] : 1;
+    const internalFormat = typeof args[2] === "number" ? args[2] : RGBA;
+    const format = webgl1Format(internalFormat);
+    let levelWidth = Math.max(1, typeof args[3] === "number" ? args[3] : 1);
+    let levelHeight = Math.max(1, typeof args[4] === "number" ? args[4] : 1);
+    const count = Math.max(1, levels | 0);
+    for (let level = 0; level < count; level += 1) {
+      invoke(gl, "texImage2D", [
+        target,
+        level,
+        format,
+        levelWidth,
+        levelHeight,
+        0,
+        format,
+        gl.UNSIGNED_BYTE,
+        null,
+      ]);
+      levelWidth = Math.max(1, levelWidth >> 1);
+      levelHeight = Math.max(1, levelHeight >> 1);
+    }
+  },
+};
+
+// tasks-vision keeps a context when `(kind == "webgl") == (ctx instanceof WebGLRenderingContext)`.
+// webgl2 is a facade over that same headless-gl context: present, and not a WebGLRenderingContext,
+// so the context is registered as major version 2 and fenceSync runs.
+function webGL2Facade(gl: WebGLRenderingContext): object {
+  const own: Record<PropertyKey, unknown> = {};
+  return new Proxy(own, {
+    get(target, prop) {
+      if (prop === "canvas") return (gl as unknown as { canvas?: unknown }).canvas;
+      if (Object.prototype.hasOwnProperty.call(target, prop)) {
+        const owned = target[prop];
+        return typeof owned === "function"
+          ? (...args: unknown[]) => (owned as (...callArgs: unknown[]) => unknown).apply(target, args)
+          : owned;
+      }
+      if (typeof prop === "string" && Object.prototype.hasOwnProperty.call(webgl2Missing, prop)) {
+        const shim = webgl2Missing[prop]!;
+        return (...args: unknown[]) => shim(gl, args);
+      }
+      const value = (gl as unknown as Record<PropertyKey, unknown>)[prop];
+      if (typeof value === "function") {
+        return (...args: unknown[]) => callAdapted(gl, prop, args);
+      }
+      return value;
+    },
+    set(target, prop, value) {
+      if (prop === "canvas") return true;
+      target[prop] = value;
+      return true;
+    },
+  });
+}
+
+function publishWebGLConstructor(factory: HeadlessGL): void {
   const ctor = factory.WebGLRenderingContext;
   if (typeof ctor !== "function") {
     throw new Error(
@@ -497,7 +767,10 @@ function publishWebGLConstructor(factory: HeadlessGL, raw: object): void {
   if (typeof globals.WebGLRenderingContext !== "function") {
     globals.WebGLRenderingContext = ctor;
   }
-  const published = globals.WebGLRenderingContext;
+}
+
+function assertWebGLContext(raw: object): void {
+  const published = host().WebGLRenderingContext;
   if (typeof published !== "function" || !(raw instanceof published)) {
     throw new Error("headless-gl context is not a WebGLRenderingContext.");
   }
@@ -520,12 +793,10 @@ function createFaceWebGL(width: number, height: number, canvas: NodeOffscreenCan
   if (!raw) {
     throw new Error("headless-gl failed to create a WebGL context.");
   }
-  publishWebGLConstructor(factory, raw);
+  publishWebGLConstructor(factory);
+  assertWebGLContext(raw);
   const wrapped = wrapWebGL(raw, canvas);
-  const published = host().WebGLRenderingContext;
-  if (typeof published !== "function" || !(wrapped instanceof published)) {
-    throw new Error("headless-gl context is not a WebGLRenderingContext.");
-  }
+  assertWebGLContext(wrapped);
   webglCreated?.push(wrapped);
   return wrapped;
 }
@@ -539,21 +810,64 @@ function releaseWebGL(gl: WebGLRenderingContext): void {
   }
 }
 
+function faceWebGL(canvas: NodeOffscreenCanvas): WebGLRenderingContext {
+  const existing = canvasGL.get(canvas);
+  if (existing) return existing;
+  const gl = createFaceWebGL(Math.max(1, canvas.width), Math.max(1, canvas.height), canvas);
+  canvasGL.set(canvas, gl);
+  return gl;
+}
+
+function faceWebGL2(canvas: NodeOffscreenCanvas): object {
+  const existing = canvasGL2.get(canvas);
+  if (existing) return existing;
+  const facade = webGL2Facade(faceWebGL(canvas));
+  canvasGL2.set(canvas, facade);
+  return facade;
+}
+
+function resizeFaceWebGL(canvas: NodeOffscreenCanvas): void {
+  const gl = canvasGL.get(canvas);
+  if (!gl) return;
+  const width = Math.max(1, canvas.width | 0);
+  const height = Math.max(1, canvas.height | 0);
+  const ext = gl.getExtension("STACKGL_resize_drawingbuffer") as {
+    resize?: (nextWidth: number, nextHeight: number) => void;
+  } | null;
+  ext?.resize?.(width, height);
+}
+
 export class NodeOffscreenCanvas {
-  width: number;
-  height: number;
+  #width: number;
+  #height: number;
   constructor(width = 0, height = 0) {
-    this.width = width;
-    this.height = height;
+    this.#width = width;
+    this.#height = height;
   }
-  // webgl2 stays null so tasks-vision falls through to this WebGL 1 context.
-  getContext(kind?: string): WebGLRenderingContext | null {
-    if (kind !== "webgl") return null;
-    const existing = canvasGL.get(this);
-    if (existing) return existing;
-    const gl = createFaceWebGL(Math.max(1, this.width), Math.max(1, this.height), this);
-    canvasGL.set(this, gl);
-    return gl;
+  get width(): number {
+    return this.#width;
+  }
+  set width(value: number) {
+    this.#width = value;
+    resizeFaceWebGL(this);
+  }
+  get height(): number {
+    return this.#height;
+  }
+  set height(value: number) {
+    this.#height = value;
+    resizeFaceWebGL(this);
+  }
+  // Publish headless-gl's constructor before returning. tasks-vision then evaluates
+  // `ctx instanceof WebGLRenderingContext` and rejects a WebGL 1 object for "webgl2".
+  getContext(kind: "webgl"): WebGLRenderingContext | null;
+  getContext(kind: "webgl2"): object;
+  getContext(kind?: string): WebGLRenderingContext | object | null;
+  getContext(kind?: string): WebGLRenderingContext | object | null {
+    publishWebGLConstructor(headlessGL());
+    if (kind === "webgl") return faceWebGL(this);
+    if (kind === "webgl2") return faceWebGL2(this);
+    return null;
   }
   addEventListener(): void {}
   removeEventListener(): void {}

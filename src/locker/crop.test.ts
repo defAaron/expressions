@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
@@ -628,7 +629,10 @@ describe("createMediaPipeDetector", () => {
     const canvas = new NodeOffscreenCanvas(2, 2);
     const gl = canvas.getContext("webgl");
     expect(gl).not.toBeNull();
-    expect(canvas.getContext("webgl2")).toBeNull();
+    expect(gl instanceof WebGLRenderingContext).toBe(true);
+    const gl2 = canvas.getContext("webgl2");
+    expect(gl2).not.toBeNull();
+    expect(gl2 instanceof WebGLRenderingContext).toBe(false);
     if (!gl) return;
 
     const image = {
@@ -663,4 +667,115 @@ describe("createMediaPipeDetector", () => {
     const ext = gl.getExtension("STACKGL_destroy_context") as { destroy?: () => void } | null;
     ext?.destroy?.();
   });
+
+  it("returns a webgl2 facade when WebGLRenderingContext starts out absent", () => {
+    const globals = globalThis as unknown as Record<string, unknown>;
+    const previous = globals.WebGLRenderingContext;
+    delete globals.WebGLRenderingContext;
+    const canvas = new NodeOffscreenCanvas(2, 2);
+    let gl: WebGLRenderingContext | null = null;
+    try {
+      let context: object | null = null;
+      expect(() => {
+        context = canvas.getContext("webgl2");
+        void (context instanceof WebGLRenderingContext);
+      }).not.toThrow();
+      expect(context).not.toBeNull();
+      expect(context instanceof WebGLRenderingContext).toBe(false);
+      gl = canvas.getContext("webgl");
+      expect(gl instanceof WebGLRenderingContext).toBe(true);
+    } finally {
+      const ext = gl?.getExtension("STACKGL_destroy_context") as { destroy?: () => void } | null;
+      ext?.destroy?.();
+      if (previous === undefined) delete globals.WebGLRenderingContext;
+      else globals.WebGLRenderingContext = previous;
+    }
+  });
+
+  it("signals a finished fence on the WebGL 1 context", () => {
+    const canvas = new NodeOffscreenCanvas(2, 2);
+    const gl = canvas.getContext("webgl") as
+      | (WebGLRenderingContext & {
+          fenceSync: () => object;
+          clientWaitSync: (sync: object, flags: number, timeout: number) => number;
+          deleteSync: (sync: object | null) => void;
+        })
+      | null;
+    expect(gl).not.toBeNull();
+    if (!gl) return;
+    try {
+      const first = gl.fenceSync();
+      const second = gl.fenceSync();
+      expect(first).toBeTruthy();
+      expect(second).toBeTruthy();
+      expect(first).not.toBe(second);
+      expect(gl.clientWaitSync(first, 0, 0)).toBe(0x911a);
+      expect(() => gl.deleteSync(first)).not.toThrow();
+    } finally {
+      const ext = gl.getExtension("STACKGL_destroy_context") as { destroy?: () => void } | null;
+      ext?.destroy?.();
+    }
+  });
+
+  it("resolves a face array from the local landmarker model without a download", async () => {
+    const urls: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      urls.push(url);
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+    let faces: DetectedFace[] | undefined;
+    let failure: unknown;
+    try {
+      try {
+        faces = await createMediaPipeDetector()(tinyImage());
+      } catch (error) {
+        failure = error;
+      }
+      expect(urls.filter((url) => url.startsWith("http://") || url.startsWith("https://"))).toEqual(
+        [],
+      );
+      expect(failure).toBeUndefined();
+      expect(Array.isArray(faces)).toBe(true);
+    } finally {
+      globalThis.fetch = original;
+    }
+  }, 120_000);
+
+  const portrait = path.join(
+    process.cwd(),
+    "public/faces/60e9c989f9b70c7b686b617bc349ebc4/smile.webp",
+  );
+
+  it.skipIf(!existsSync(portrait))(
+    "detects the local smile portrait with both eyes visible",
+    async () => {
+      const bytes = await readFile(portrait);
+      const decoded = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      const image: RgbaImage = {
+        width: decoded.info.width,
+        height: decoded.info.height,
+        data: new Uint8Array(decoded.data),
+      };
+      const urls: string[] = [];
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = requestUrl(input);
+        urls.push(url);
+        throw new Error(`unexpected fetch ${url}`);
+      }) as typeof fetch;
+      try {
+        const faces = await createMediaPipeDetector()(image);
+        expect(
+          urls.filter((url) => url.startsWith("http://") || url.startsWith("https://")),
+        ).toEqual([]);
+        expect(faces).toHaveLength(1);
+        expect(faces[0]?.bothEyesVisible).toBe(true);
+      } finally {
+        globalThis.fetch = original;
+      }
+    },
+    120_000,
+  );
 });

@@ -9,3 +9,5 @@ out/
 coverage/
 *.log
 .DS_Store
+public/faces/
+private/faces/
