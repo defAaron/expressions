@@ -163,7 +163,11 @@ describe("face API handlers", () => {
 
   it("returns 401 when the bearer key is missing", async () => {
     const runWorker = vi.fn();
-    const deps = baseDeps({ runWorker });
+    const prepare = vi.fn(() => ({
+      ok: true as const,
+      smilePath: "public/faces/t/smile.webp",
+    }));
+    const deps = baseDeps({ runWorker, prepare });
     const h = handlers();
     const request = multipartBody({
       file: new Blob([new Uint8Array([1])]),
@@ -172,6 +176,8 @@ describe("face API handlers", () => {
     });
     const response = await h.postFaces(request, deps);
     expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+    expect(prepare).not.toHaveBeenCalled();
     expect(runWorker).not.toHaveBeenCalled();
   });
 

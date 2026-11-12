@@ -463,13 +463,6 @@ export function createFaceHandlers() {
         return json({ error: "invalid_form" }, 400);
       }
 
-      const bytes = Buffer.from(await file.arrayBuffer());
-      const id = deps.newFaceId();
-      const prepared = await deps.prepare(bytes, mediaType, id);
-      if (!prepared.ok) {
-        return json({ error: prepared.error }, 400);
-      }
-
       const apiKey = bearerKey(request);
       if (!apiKey) {
         return json({ error: "unauthorized" }, 401);
@@ -478,6 +471,13 @@ export function createFaceHandlers() {
       const recipeOutcome = recipeCheck(deps);
       if (!recipeOutcome.ok) {
         return recipeOutcome.response;
+      }
+
+      const bytes = Buffer.from(await file.arrayBuffer());
+      const id = deps.newFaceId();
+      const prepared = await deps.prepare(bytes, mediaType, id);
+      if (!prepared.ok) {
+        return json({ error: prepared.error }, 400);
       }
       await deps.store.createFace({
         id,
