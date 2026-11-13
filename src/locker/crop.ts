@@ -1,6 +1,6 @@
 import { createHook } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import * as nodeModule from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
@@ -21,7 +21,7 @@ const MAX_DECODE_PIXELS = 8192 * 8192;
 const FACE_PORTION = 0.55;
 const MODEL_PATH = path.join(process.cwd(), "models", "face_landmarker.task");
 
-const require = createRequire(import.meta.url);
+const nodeRequire = nodeModule.createRequire(import.meta.url);
 
 export type DetectedFace = {
   box: { x: number; y: number; width: number; height: number };
@@ -376,17 +376,57 @@ function isEnoent(error: unknown): boolean {
   );
 }
 
+function isModuleNotFound(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "MODULE_NOT_FOUND"
+  );
+}
+
+// The bundled handler's import.meta.url is the build path (/vercel/path0/...).
+// The traced files live under process.cwd(), so a failed lookup retries there.
+function resolveFromProject(specifier: string): string {
+  const fromProject = nodeModule.createRequire(path.join(process.cwd(), "package.json"));
+  return fromProject.resolve(specifier);
+}
+
+function requireFromProject(specifier: string): unknown {
+  const fromProject = nodeModule.createRequire(path.join(process.cwd(), "package.json"));
+  return fromProject(specifier);
+}
+
 function wasmModulePath(): string {
-  return require.resolve("@mediapipe/tasks-vision/vision_wasm_module_internal.js");
+  const specifier = "@mediapipe/tasks-vision/vision_wasm_module_internal.js";
+  try {
+    return nodeRequire.resolve(specifier);
+  } catch (error) {
+    if (!isModuleNotFound(error)) throw error;
+    return resolveFromProject(specifier);
+  }
 }
 
 let moduleFactory: ((moduleArg?: object) => Promise<unknown>) | undefined;
+
+function nativeImport(href: string): Promise<unknown> {
+  return import(
+    /* webpackIgnore: true */
+    /* @vite-ignore */
+    href
+  );
+}
 
 async function ensureModuleFactory(): Promise<void> {
   const globals = host();
   if (typeof globals.ModuleFactory === "function") return;
   if (!moduleFactory) {
-    const loaded = (await import(pathToFileURL(wasmModulePath()).href)) as { default?: unknown };
+    const href = pathToFileURL(wasmModulePath()).href;
+    const loaded = (await import(
+      /* webpackIgnore: true */
+      /* @vite-ignore */
+      href
+    )) as { default?: unknown };
     if (typeof loaded.default !== "function") {
       throw new Error("Local face-landmarker wasm did not load. Refusing to download it.");
     }
@@ -425,7 +465,12 @@ function errorText(error: unknown): string {
 function headlessGL(): HeadlessGL {
   let loaded: unknown;
   try {
-    loaded = require("gl");
+    try {
+      loaded = nodeRequire("gl");
+    } catch (error) {
+      if (!isModuleNotFound(error)) throw error;
+      loaded = requireFromProject("gl");
+    }
   } catch (error) {
     throw new Error(`headless-gl failed to load: ${errorText(error)}`);
   }
@@ -1077,13 +1122,15 @@ async function detectWithLocalModel(
     self: globals.self,
     require: globals.require,
     importScripts: globals.importScripts,
+    importer: globals["import"],
     fetch: globalThis.fetch,
     ModuleFactory: globals.ModuleFactory,
   };
   const releaseCanvas = installNodeCanvas();
   const releaseIntervals = captureIntervals();
   globals.self = globalThis;
-  globals.require = require;
+  globals.require = nodeRequire;
+  globals["import"] = nativeImport;
   globals.importScripts = () => {
     throw new TypeError("Load face-landmarker wasm from disk.");
   };
@@ -1117,6 +1164,7 @@ async function detectWithLocalModel(
     restoreHost("self", previous.self);
     restoreHost("require", previous.require);
     restoreHost("importScripts", previous.importScripts);
+    restoreHost("import", previous.importer);
     restoreHost("ModuleFactory", previous.ModuleFactory);
     globalThis.fetch = previous.fetch;
     webglCreated = previousWebGL;
