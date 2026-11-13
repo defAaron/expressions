@@ -1,14 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import type { Manifest } from "../contract/manifest";
 import { createMediaPipeDetector, cropToSmile } from "../locker/crop";
+import type { SmileLandmarks } from "../locker/types";
 import { createMagicHourClient } from "../magic-hour/client";
+import { createLiveMagicHourClient } from "../magic-hour/live";
 import { assertRecipePresent } from "../magic-hour/recipe-gate";
 import { parseRecipe, type Recipe } from "../recipe/recipe";
 import { bundlePath, sourcePath } from "../storage/blobs";
+import { createPlatePersister, writeSmileLandmarks } from "../worker/persist";
 import { runFace } from "../worker/run";
 
 export type PlateGroup = "curious" | "pain" | "nausea" | "gaze" | "blink";
@@ -325,7 +328,85 @@ export type FaceApiDeps = {
   createClient: typeof createMagicHourClient;
 };
 
-const sharedFaceStore = createInMemoryFaceStore();
+function appOrigin(): string {
+  return (
+    process.env.NEXT_PUBLIC_APP_ORIGIN?.replace(/\/$/, "") ??
+    (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3456")
+  );
+}
+
+async function stampEyes(faceId: string, manifest: Manifest): Promise<void> {
+  try {
+    const raw = await readFile(
+      path.join(process.cwd(), bundlePath(faceId, "landmarks.json")),
+      "utf8",
+    );
+    const landmarks = JSON.parse(raw) as SmileLandmarks;
+    const left = landmarks.leftEye;
+    const right = landmarks.rightEye;
+    manifest.eyes = {
+      left: [
+        Math.round(left.x),
+        Math.round(left.y),
+        Math.round(left.width),
+        Math.round(left.height),
+      ],
+      right: [
+        Math.round(right.x),
+        Math.round(right.y),
+        Math.round(right.width),
+        Math.round(right.height),
+      ],
+      between: [
+        Math.round(landmarks.betweenPupils.x),
+        Math.round(landmarks.betweenPupils.y),
+      ],
+    };
+    manifest.gaze.cellWidth = Math.round(left.width) + Math.round(right.width);
+    manifest.gaze.cellHeight = Math.round(Math.max(left.height, right.height));
+  } catch {
+    // The smile can still preview if the landmark file is not written yet.
+  }
+}
+
+function publishLocalBundles(inner: FaceStore): FaceStore {
+  return {
+    ...inner,
+    async writeManifest(faceId) {
+      await inner.writeManifest(faceId);
+      const manifest = await inner.readManifest(faceId);
+      if (manifest && typeof manifest === "object") {
+        const stamped = manifest as Manifest;
+        await stampEyes(faceId, stamped);
+        const version = Date.now();
+        const bust = (file: string) => `${file.split("?")[0]}?v=${version}`;
+        for (const plate of ["smile", "curious", "pain", "nausea"] as const) {
+          const file = stamped.plates[plate];
+          if (file) stamped.plates[plate] = bust(file);
+        }
+        stamped.gaze.sheet = bust(stamped.gaze.sheet);
+        const file = path.join(process.cwd(), bundlePath(faceId, "manifest.json"));
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, JSON.stringify(stamped));
+      }
+      return `${appOrigin()}/faces/${faceId}/manifest.json`;
+    },
+    async getManifestUrl(faceId) {
+      const face = await inner.getFace(faceId);
+      if (!face?.smilePath) return undefined;
+      return `${appOrigin()}/faces/${faceId}/manifest.json`;
+    },
+  };
+}
+
+const storeGlobal = globalThis as typeof globalThis & {
+  __expressionsFaceStore?: FaceStore;
+};
+const sharedFaceStore =
+  storeGlobal.__expressionsFaceStore ??
+  (storeGlobal.__expressionsFaceStore = publishLocalBundles(createInMemoryFaceStore()));
 
 function isFaceModelMissingError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -384,6 +465,7 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
         const sourceAbs = path.join(process.cwd(), sourceRel);
         await mkdir(path.dirname(sourceAbs), { recursive: true });
         await writeFile(sourceAbs, bytes);
+        await writeSmileLandmarks(faceId, cropped.landmarks);
         return { ok: true, smilePath: smileRel };
       } catch (error) {
         if (isFaceModelMissingError(error)) {
@@ -395,10 +477,18 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
     rateLimit: new IpRateLimiter(10, 60_000),
     newFaceId: () => randomBytes(16).toString("hex"),
     runWorker: async ({ faceId, apiKey, plates }) => {
+      console.error(`[expressions] worker start ${faceId}`);
       const recipeBody = deps.readRecipe();
-      if (!recipeBody) return;
+      if (!recipeBody) {
+        console.error(`[expressions] worker ${faceId} recipe missing`);
+        return;
+      }
       const recipe = deps.parseRecipe(JSON.parse(recipeBody));
-      const client = deps.createClient(apiKey);
+      const client = createLiveMagicHourClient(apiKey);
+      const persister = createPlatePersister({
+        faceId,
+        detect: createMediaPipeDetector(),
+      });
       const lockToken = randomBytes(16).toString("hex");
       await runFace({
         faceId,
@@ -408,6 +498,8 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
         apiKey,
         lockToken,
         plates,
+        saveImage: persister.saveImage,
+        finalizeGroup: persister.finalizeGroup,
       });
     },
     createClient: createMagicHourClient,
@@ -485,8 +577,12 @@ export function createFaceHandlers() {
         smilePath: prepared.smilePath,
         likenessAt: new Date(),
       });
+      await deps.store.writeManifest(id);
 
-      void deps.runWorker({ faceId: id, apiKey });
+      void deps.runWorker({ faceId: id, apiKey }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "worker failed";
+        console.error(`[expressions] worker ${id} ${message}`);
+      });
 
       return json({ id }, 200);
     },

@@ -59,6 +59,25 @@ type FaceTestApi = {
   }) => "webgl" | "2d" | "img";
   makeSpringState: (reduced: boolean) => SpringState;
   springUsesOvershoot: (state: SpringState) => boolean;
+  rubberBand: (travel: number, plateWidth: number) => number;
+  grabOffset: (
+    vertex: { x: number; y: number },
+    grabPoint: { x: number; y: number },
+    pointer: { x: number; y: number },
+    plateWidth: number,
+  ) => { x: number; y: number };
+  springStep: (
+    vertices: Array<{
+      ox: number;
+      oy: number;
+      x: number;
+      y: number;
+      vx?: number;
+      vy?: number;
+    }>,
+    dtMs: number,
+    reduced: boolean,
+  ) => void;
   ExpressionsFace: new () => HTMLElement;
 };
 
@@ -272,6 +291,55 @@ describe("face.js interaction engine", () => {
     engine.pointerUp(0.2);
     advance(500);
     expect(engine.getDisplay()).not.toBe("nausea");
+  });
+});
+
+describe("face.js mesh displacement", () => {
+  it("moves the vertex on the grab point to the pointer", () => {
+    const api = loadFaceApi();
+    const grab = { x: 480, y: 500 };
+    const pointer = { x: 510, y: 530 };
+    const vertex = { x: grab.x, y: grab.y };
+    const off = api.grabOffset(vertex, grab, pointer, api.PLATE);
+    expect(vertex.x + off.x).toBeCloseTo(pointer.x, 4);
+    expect(vertex.y + off.y).toBeCloseTo(pointer.y, 4);
+  });
+
+  it("leaves a vertex outside the grab radius where it is", () => {
+    const api = loadFaceApi();
+    const grab = { x: 480, y: 500 };
+    const pointer = { x: 520, y: 540 };
+    const vertex = { x: grab.x + api.PLATE * 0.2, y: grab.y };
+    expect(api.PLATE * 0.2).toBeGreaterThan(api.PLATE * 0.07);
+    const off = api.grabOffset(vertex, grab, pointer, api.PLATE);
+    expect(off).toEqual({ x: 0, y: 0 });
+  });
+
+  it("grows slower once travel passes 0.6 of the plate width", () => {
+    const api = loadFaceApi();
+    const w = api.PLATE;
+    const under = api.rubberBand(0.2 * w, w) - api.rubberBand(0, w);
+    const over = api.rubberBand(0.8 * w, w) - api.rubberBand(0.6 * w, w);
+    expect(over).toBeLessThan(under);
+  });
+
+  it("springs a displaced vertex home and does not overshoot with reduced motion", () => {
+    const api = loadFaceApi();
+    const free = [{ ox: 100, oy: 40, x: 160, y: 70, vx: 0, vy: 0 }];
+    const before = Math.hypot(free[0].x - free[0].ox, free[0].y - free[0].oy);
+    api.springStep(free, 16, false);
+    const after = Math.hypot(free[0].x - free[0].ox, free[0].y - free[0].oy);
+    expect(after).toBeLessThan(before);
+
+    const held = [{ ox: 100, oy: 40, x: 160, y: 70, vx: 0, vy: 0 }];
+    const signX = Math.sign(held[0].x - held[0].ox);
+    const signY = Math.sign(held[0].y - held[0].oy);
+    for (let i = 0; i < 40; i++) api.springStep(held, 16, true);
+    expect(Math.hypot(held[0].x - held[0].ox, held[0].y - held[0].oy)).toBeLessThan(
+      before,
+    );
+    expect((held[0].x - held[0].ox) * signX).toBeGreaterThanOrEqual(-1e-6);
+    expect((held[0].y - held[0].oy) * signY).toBeGreaterThanOrEqual(-1e-6);
   });
 });
 

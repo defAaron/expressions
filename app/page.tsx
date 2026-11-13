@@ -1,26 +1,16 @@
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      "expressions-face": React.DetailedHTMLProps<
-        React.HTMLAttributes<HTMLElement> & { src?: string; alt?: string },
-        HTMLElement
-      >;
-    }
-  }
-}
-
+import { Frame } from "./chrome";
 import UploadForm from "./upload-form";
 
 export default function Page() {
   return (
-    <main>
-      <h1>Expressions</h1>
-      <expressions-face
-        src="/demo/manifest.json"
-        alt="Demo face"
-        style={{ display: "block", width: "min(100%, 320px)" }}
-      />
-      <UploadForm />
-    </main>
+    <Frame lede="Turn a single image into something expressive.">
+      <UploadForm>
+        <expressions-face
+          className="demo-face"
+          src="/demo/manifest.json"
+          alt="Demo face"
+        />
+      </UploadForm>
+    </Frame>
   );
 }
