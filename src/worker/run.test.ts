@@ -25,13 +25,12 @@ function allGazePairs(): Recipe["gaze"] {
 const recipe = parseRecipe({
   version: 1,
   enhance_face: false,
-  curious: { eyebrow_direction: 10 },
-  pain: { mouth_grim: -20 },
+  curious_prompt: "curious prompt",
+  pain_prompt: "pain prompt",
   gaze: allGazePairs(),
   half_blink: { eye_open_ratio: -50 },
   shut: { eye_open_ratio: -100 },
   nausea_prompt: "nausea prompt",
-  pain_retry_prompt: "pain retry prompt",
 });
 
 async function seedFace(
@@ -77,7 +76,7 @@ describe("runFace", () => {
     expect(client.imageEdit).not.toHaveBeenCalled();
   });
 
-  it("uses imageEdit on pain's second attempt", async () => {
+  it("uses imageEdit with the pain prompt on both attempts", async () => {
     const store = createInMemoryFaceStore();
     const faceId = await seedFace(store);
     await store.updatePlate(faceId, "pain", {
@@ -88,16 +87,11 @@ describe("runFace", () => {
 
     let painCalls = 0;
     const client: MagicHourClientLike = {
-      faceEdit: vi.fn(async (input) => {
-        if (input.sliders.mouth_grim !== undefined) {
-          painCalls += 1;
-          if (painCalls === 1) {
-            return { projectId: "p1" };
-          }
-        }
-        return { projectId: "other" };
+      faceEdit: vi.fn(async () => ({ projectId: "face-should-not-run" })),
+      imageEdit: vi.fn(async () => {
+        painCalls += 1;
+        return { projectId: painCalls === 1 ? "p1" : "p2" };
       }),
-      imageEdit: vi.fn(async () => ({ projectId: "img-retry" })),
       pollProject: vi.fn(async (projectId) => {
         if (projectId === "p1") {
           return { status: "error", message: "locker fail" };
@@ -116,10 +110,14 @@ describe("runFace", () => {
       plates: ["pain"],
     });
 
-    expect(client.imageEdit).toHaveBeenCalledWith({
+    const painEdit = {
       imageFilePath: "public/faces/x/smile.webp",
-      prompt: "pain retry prompt",
-    });
+      prompt: "pain prompt",
+    };
+    expect(client.faceEdit).not.toHaveBeenCalled();
+    expect(client.imageEdit).toHaveBeenCalledTimes(2);
+    expect(client.imageEdit).toHaveBeenNthCalledWith(1, painEdit);
+    expect(client.imageEdit).toHaveBeenNthCalledWith(2, painEdit);
     const pain = await store.getPlate(faceId, "pain");
     expect(pain?.status).toBe("ready");
   });
@@ -205,8 +203,8 @@ describe("runFace", () => {
     });
 
     const client: MagicHourClientLike = {
-      faceEdit: vi.fn(async () => ({ projectId: "curious-1" })),
-      imageEdit: vi.fn(),
+      faceEdit: vi.fn(),
+      imageEdit: vi.fn(async () => ({ projectId: "curious-1" })),
       pollProject: vi.fn(async () => ({
         status: "complete",
         imageUrl: "https://cdn/curious.webp",
@@ -223,6 +221,11 @@ describe("runFace", () => {
       plates: ["curious"],
     });
 
+    expect(client.faceEdit).not.toHaveBeenCalled();
+    expect(client.imageEdit).toHaveBeenCalledWith({
+      imageFilePath: "public/faces/x/smile.webp",
+      prompt: "curious prompt",
+    });
     const manifest = await store.readManifest(faceId);
     expect(manifest).toBeTruthy();
     const plates = (manifest as { plates?: Record<string, string> }).plates;

@@ -26,13 +26,12 @@ function allGazePairs(): Recipe["gaze"] {
 const recipeJson = JSON.stringify({
   version: 1,
   enhance_face: false,
-  curious: { eyebrow_direction: 10 },
-  pain: { mouth_grim: -20 },
+  curious_prompt: "curious",
+  pain_prompt: "pain",
   gaze: allGazePairs(),
   half_blink: { eye_open_ratio: -50 },
   shut: { eye_open_ratio: -100 },
   nausea_prompt: "nausea",
-  pain_retry_prompt: "pain retry",
 });
 
 const recipe = parseRecipe(JSON.parse(recipeJson));

@@ -34,7 +34,7 @@ Security gate: required. Untrusted images stay inside the size, type, and decode
 
 ## 3. Recipe calibration
 
-Done when `recipes/v1.json` is frozen from a real calibration run: Face Editor sliders on a step of 5 within -100..100, `enhance_face` false, fixed nausea prompt, fixed pain-retry prompt, and the locker accepts curious, pain, gaze, blinks, and nausea on the calibration portrait. Runtime reads this file and does not improvise prompts.
+Done when `recipes/v1.json` is frozen from a real calibration run: the recipe freezes gaze and blink Face Editor sliders (step of 5, -100..100, `enhance_face` false) and the three fixed expression prompts, and the locker accepts curious, pain, gaze, blinks, and nausea on the calibration portrait. Runtime reads this file and does not improvise prompts.
 
 Start this problem only after the human has confirmed Magic Hour spend and a calibration portrait is in the repo. If `MAGIC_HOUR_API_KEY` or the portrait is missing, stop, say what to add, and do not invent slider values.
 
@@ -59,7 +59,7 @@ Security gate: required.
 
 ## 5. Face API and generation worker
 
-Done when these routes exist and are tested: `POST /api/faces` (rate limited by IP, likeness required, rejection before any credit spend, unguessable id), `GET /api/faces/:id`, `POST /api/faces/:id/retry` (plate enum and the retry budget), `POST /api/faces/:id/accept` (requires smile, pain, and nausea ready), `DELETE /api/faces/:id` (row, source, and bundle). The worker runs one at a time per face, four Magic Hour calls at a time, in the architecture order, two attempts per plate, pain allowed to switch to Image Editor on the second attempt. The manifest updates as plates land. A missing id returns the same not-found for get, retry, accept, and delete.
+Done when these routes exist and are tested: `POST /api/faces` (rate limited by IP, likeness required, rejection before any credit spend, unguessable id), `GET /api/faces/:id`, `POST /api/faces/:id/retry` (plate enum and the retry budget), `POST /api/faces/:id/accept` (requires smile, pain, and nausea ready), `DELETE /api/faces/:id` (row, source, and bundle). The worker runs one at a time per face, four Magic Hour calls at a time, in the architecture order, two attempts per plate, and curious, pain, and nausea use Image Editor on both attempts with the same prompt. The manifest updates as plates land. A missing id returns the same not-found for get, retry, accept, and delete.
 
 Security gate: required. This is the full endpoint pass.
 

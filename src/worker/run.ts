@@ -90,37 +90,36 @@ async function runPool(
   await Promise.all(runners);
 }
 
+export type SaveImage = (
+  item: WorkItem,
+  imageUrl: string,
+) => Promise<{ ok: true } | { ok: false; message: string }>;
+
 async function callClient(
   client: MagicHourClientLike,
   item: WorkItem,
   recipe: Recipe,
   imageFilePath: string,
-  attempt: number,
+  saveImage?: SaveImage,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   let projectId: string;
   try {
-    if (item.kind === "pain" && attempt === 1) {
+    if (item.kind === "curious") {
       const result = await client.imageEdit({
         imageFilePath,
-        prompt: recipe.pain_retry_prompt,
+        prompt: recipe.curious_prompt,
       });
       projectId = result.projectId;
     } else if (item.kind === "pain") {
-      const result = await client.faceEdit({
+      const result = await client.imageEdit({
         imageFilePath,
-        sliders: recipe.pain,
+        prompt: recipe.pain_prompt,
       });
       projectId = result.projectId;
     } else if (item.kind === "nausea") {
       const result = await client.imageEdit({
         imageFilePath,
         prompt: recipe.nausea_prompt,
-      });
-      projectId = result.projectId;
-    } else if (item.kind === "curious") {
-      const result = await client.faceEdit({
-        imageFilePath,
-        sliders: recipe.curious,
       });
       projectId = result.projectId;
     } else if (item.kind === "gaze") {
@@ -153,6 +152,16 @@ async function callClient(
 
   const polled = await client.pollProject(projectId);
   if (polled.status === "complete") {
+    if (saveImage) {
+      try {
+        const saved = await saveImage(item, polled.imageUrl);
+        if (!saved.ok) return saved;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Could not save the plate.";
+        return { ok: false, message };
+      }
+    }
     return { ok: true };
   }
   return { ok: false, message: polled.message };
@@ -166,21 +175,44 @@ export async function runFace(input: {
   apiKey: string;
   lockToken: string;
   plates?: PlateGroup[];
+  saveImage?: SaveImage;
+  finalizeGroup?: (group: "gaze" | "blink") => Promise<void>;
 }): Promise<void> {
   void input.apiKey;
 
   const acquired = await input.store.tryLock(input.faceId, input.lockToken);
-  if (!acquired) return;
+  if (!acquired) {
+    console.error(`[expressions] worker ${input.faceId} lock failed`);
+    return;
+  }
 
   try {
     const smilePath = input.store.getSmileFilePath(input.faceId);
-    if (!smilePath) return;
+    if (!smilePath) {
+      console.error(`[expressions] worker ${input.faceId} smile missing`);
+      return;
+    }
 
     const rows = await input.store.listPlates(input.faceId);
     const allowed = new Set(
       rows.filter((row) => row.status !== "ready").map((row) => row.plate),
     );
     const queue = buildQueue(input.recipe, input.plates, allowed);
+    const multi = new Map<
+      "gaze" | "blink",
+      { left: number; ok: number; lastError: string }
+    >();
+    for (const item of queue) {
+      const group = plateGroupForItem(item);
+      if (group !== "gaze" && group !== "blink") continue;
+      const tally = multi.get(group) ?? {
+        left: 0,
+        ok: 0,
+        lastError: "generation failed",
+      };
+      tally.left += 1;
+      multi.set(group, tally);
+    }
 
     await runPool(queue, 4, async (item) => {
       const group = plateGroupForItem(item);
@@ -204,7 +236,7 @@ export async function runFace(input: {
           item,
           input.recipe,
           smilePath,
-          attempt,
+          input.saveImage,
         );
         if (outcome.ok) {
           succeeded = true;
@@ -214,25 +246,50 @@ export async function runFace(input: {
             input.store.notePlateAsset(input.faceId, "pain", "pain.webp");
           } else if (item.kind === "nausea") {
             input.store.notePlateAsset(input.faceId, "nausea", "nausea.webp");
-          } else if (item.kind === "gaze") {
+          } else if (
+            item.kind === "gaze" ||
+            item.kind === "half_blink" ||
+            item.kind === "shut"
+          ) {
             input.store.notePlateAsset(input.faceId, "gaze", "gaze.webp");
           }
-          await input.store.updatePlate(input.faceId, group, {
-            status: "ready",
-            error: undefined,
-          });
-          await input.store.writeManifest(input.faceId);
           break;
         }
         lastError = outcome.message;
       }
 
-      if (!succeeded) {
+      if (group === "gaze" || group === "blink") {
+        const tally = multi.get(group);
+        if (!tally) return;
+        tally.left -= 1;
+        if (succeeded) tally.ok += 1;
+        else tally.lastError = lastError;
+        if (tally.left > 0) return;
+        const ready = tally.ok > 0;
+        if (ready && input.finalizeGroup) {
+          await input.finalizeGroup(group);
+        }
         await input.store.updatePlate(input.faceId, group, {
-          status: "failed",
-          error: lastError,
+          status: ready ? "ready" : "failed",
+          error: ready ? undefined : tally.lastError,
         });
+        if (ready) await input.store.writeManifest(input.faceId);
+        return;
       }
+
+      if (succeeded) {
+        await input.store.updatePlate(input.faceId, group, {
+          status: "ready",
+          error: undefined,
+        });
+        await input.store.writeManifest(input.faceId);
+        return;
+      }
+
+      await input.store.updatePlate(input.faceId, group, {
+        status: "failed",
+        error: lastError,
+      });
     });
   } finally {
     await input.store.unlock(input.faceId, input.lockToken);

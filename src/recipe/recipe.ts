@@ -14,8 +14,6 @@ export const SLIDER_NAMES = [
 
 export type SliderName = (typeof SLIDER_NAMES)[number];
 
-type SliderMap = Partial<Record<SliderName, number>>;
-
 const GAZE_AXIS_VALUES = [-100, -50, 0, 50, 100] as const;
 
 export type GazeEntry = {
@@ -26,13 +24,12 @@ export type GazeEntry = {
 export type Recipe = {
   version: 1;
   enhance_face: false;
-  curious: SliderMap;
-  pain: SliderMap;
+  curious_prompt: string;
+  pain_prompt: string;
   gaze: GazeEntry[];
   half_blink: { eye_open_ratio: number };
   shut: { eye_open_ratio: number };
   nausea_prompt: string;
-  pain_retry_prompt: string;
 };
 
 function fail(field: string): never {
@@ -41,10 +38,6 @@ function fail(field: string): never {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isSliderName(key: string): key is SliderName {
-  return (SLIDER_NAMES as readonly string[]).includes(key);
 }
 
 function isSliderStep(value: number): boolean {
@@ -60,19 +53,6 @@ function requireSliderValue(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) fail(field);
   if (!isSliderStep(value)) fail(field);
   return value;
-}
-
-function parseSliderMap(
-  value: unknown,
-  field: string,
-): SliderMap {
-  if (!isRecord(value)) fail(field);
-  const map: SliderMap = {};
-  for (const key of Object.keys(value)) {
-    if (!isSliderName(key)) fail(`${field}.${key}`);
-    map[key] = requireSliderValue(value[key], `${field}.${key}`);
-  }
-  return map;
 }
 
 function isGazeAxis(value: number): value is (typeof GAZE_AXIS_VALUES)[number] {
@@ -158,26 +138,21 @@ export function parseRecipe(value: unknown): Recipe {
   if (value.version !== 1) fail("version");
   if (value.enhance_face !== false) fail("enhance_face");
 
-  const curious = parseSliderMap(value.curious, "curious");
-  const pain = parseSliderMap(value.pain, "pain");
+  const curious_prompt = requireNonEmptyString(value.curious_prompt, "curious_prompt");
+  const pain_prompt = requireNonEmptyString(value.pain_prompt, "pain_prompt");
   const gaze = parseGaze(value.gaze);
   const half_blink = requireNegativeSlider(value.half_blink, "half_blink");
   const shut = requireNegativeSlider(value.shut, "shut");
   const nausea_prompt = requireNonEmptyString(value.nausea_prompt, "nausea_prompt");
-  const pain_retry_prompt = requireNonEmptyString(
-    value.pain_retry_prompt,
-    "pain_retry_prompt",
-  );
 
   return {
     version: 1,
     enhance_face: false,
-    curious,
-    pain,
+    curious_prompt,
+    pain_prompt,
     gaze,
     half_blink,
     shut,
     nausea_prompt,
-    pain_retry_prompt,
   };
 }

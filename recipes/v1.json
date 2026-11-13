@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "enhance_face": false,
+  "curious_prompt": "Transform the person's neutral facial expression into a naturally curious expression, with slightly raised eyebrows, subtly widened eyes, and a gently parted mouth. Preserve their exact facial identity and all other features. **Do not move, alter, or regenerate the head, ears, hair, neck, clothing, or background.** Only modify the facial expression. Maintain realistic anatomy, natural lighting, and photorealistic quality.",
+  "pain_prompt": "Transform the person's neutral facial expression into a natural expression of pain, with slightly furrowed eyebrows, narrowed eyes, subtle tension around the nose and mouth, and lightly pressed or parted lips. Preserve their exact facial identity and all other features. Do not move, alter, or regenerate the head, ears, hair, neck, clothing, or background. Only modify the facial expression. Maintain realistic anatomy, natural lighting, and photorealistic quality.",
+  "gaze": [
+    {
+      "eye_gaze_horizontal": -100,
+      "eye_gaze_vertical": -100
+    },
+    {
+      "eye_gaze_horizontal": -100,
+      "eye_gaze_vertical": -50
+    },
+    {
+      "eye_gaze_horizontal": -100,
+      "eye_gaze_vertical": 0
+    },
+    {
+      "eye_gaze_horizontal": -100,
+      "eye_gaze_vertical": 50
+    },
+    {
+      "eye_gaze_horizontal": -100,
+      "eye_gaze_vertical": 100
+    },
+    {
+      "eye_gaze_horizontal": -50,
+      "eye_gaze_vertical": -100
+    },
+    {
+      "eye_gaze_horizontal": -50,
+      "eye_gaze_vertical": -50
+    },
+    {
+      "eye_gaze_horizontal": -50,
+      "eye_gaze_vertical": 0
+    },
+    {
+      "eye_gaze_horizontal": -50,
+      "eye_gaze_vertical": 50
+    },
+    {
+      "eye_gaze_horizontal": -50,
+      "eye_gaze_vertical": 100
+    },
+    {
+      "eye_gaze_horizontal": 0,
+      "eye_gaze_vertical": -100
+    },
+    {
+      "eye_gaze_horizontal": 0,
+      "eye_gaze_vertical": -50
+    },
+    {
+      "eye_gaze_horizontal": 0,
+      "eye_gaze_vertical": 50
+    },
+    {
+      "eye_gaze_horizontal": 0,
+      "eye_gaze_vertical": 100
+    },
+    {
+      "eye_gaze_horizontal": 50,
+      "eye_gaze_vertical": -100
+    },
+    {
+      "eye_gaze_horizontal": 50,
+      "eye_gaze_vertical": -50
+    },
+    {
+      "eye_gaze_horizontal": 50,
+      "eye_gaze_vertical": 0
+    },
+    {
+      "eye_gaze_horizontal": 50,
+      "eye_gaze_vertical": 50
+    },
+    {
+      "eye_gaze_horizontal": 50,
+      "eye_gaze_vertical": 100
+    },
+    {
+      "eye_gaze_horizontal": 100,
+      "eye_gaze_vertical": -100
+    },
+    {
+      "eye_gaze_horizontal": 100,
+      "eye_gaze_vertical": -50
+    },
+    {
+      "eye_gaze_horizontal": 100,
+      "eye_gaze_vertical": 0
+    },
+    {
+      "eye_gaze_horizontal": 100,
+      "eye_gaze_vertical": 50
+    },
+    {
+      "eye_gaze_horizontal": 100,
+      "eye_gaze_vertical": 100
+    }
+  ],
+  "half_blink": {
+    "eye_open_ratio": -50
+  },
+  "shut": {
+    "eye_open_ratio": -100
+  },
+  "nausea_prompt": "Transform the person's neutral facial expression into a natural expression of nausea, with slightly furrowed eyebrows, subtly narrowed eyes, a mildly wrinkled nose, and a tense, slightly downturned mouth. Convey a sense of queasiness without exaggeration. Preserve their exact facial identity and all other features. Do not move, alter, or regenerate the head, ears, hair, neck, clothing, or background. Only modify the facial expression. Maintain realistic anatomy, natural lighting, and photorealistic quality."
+}

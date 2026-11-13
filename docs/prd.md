@@ -140,7 +140,7 @@ Pain and nausea do not get a gaze grid. Their eyes are part of the joke, and tra
 
 ### What we do not generate in v1
 
-Yawn frames, whistle frames, a doze sequence, shock as its own plate, an annoyed plate, a deadpan plate, and a second pain intensity. One pain plate is enough because the stretch itself carries the intensity. If pain from the Face Editor sliders does not read as bracing on the calibration set, the pipeline may spend one Image Editor retry on that plate. That retry is still a single pain plate in the bundle.
+Yawn frames, whistle frames, a doze sequence, shock as its own plate, an annoyed plate, a deadpan plate, and a second pain intensity. One pain plate is enough because the stretch itself carries the intensity. Pain is the one fixed Image Editor plate, and it is still a single pain plate in the bundle.
 
 ## Upload rules
 

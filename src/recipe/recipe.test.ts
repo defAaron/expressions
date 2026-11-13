@@ -17,13 +17,12 @@ function allGazePairs(): Recipe["gaze"] {
 const validRecipe = {
   version: 1,
   enhance_face: false,
-  curious: { eyebrow_direction: 10 },
-  pain: { mouth_grim: -20, eyebrow_direction: -15 },
+  curious_prompt: "curious expression",
+  pain_prompt: "pain expression",
   gaze: allGazePairs(),
   half_blink: { eye_open_ratio: -50 },
   shut: { eye_open_ratio: -100 },
-  nausea_prompt: "crossed eyes, tongue out",
-  pain_retry_prompt: "wincing in sharp pain",
+  nausea_prompt: "nausea expression",
 };
 
 function recipeWith(patch: Record<string, unknown>): unknown {
@@ -45,10 +44,10 @@ describe("parseRecipe", () => {
     expect(() =>
       parseRecipe(
         recipeWith({
-          curious: { mouth_smile: 3 },
+          half_blink: { eye_open_ratio: -3 },
         }),
       ),
-    ).toThrow("curious.mouth_smile");
+    ).toThrow("half_blink.eye_open_ratio");
   });
 
   it("rejects gaze that includes 0, 0", () => {
@@ -60,6 +59,18 @@ describe("parseRecipe", () => {
   it("rejects gaze when a pair is missing from the 24", () => {
     const gaze = allGazePairs().slice(0, 23);
     expect(() => parseRecipe(recipeWith({ gaze }))).toThrow("gaze");
+  });
+
+  it("rejects an empty curious_prompt", () => {
+    expect(() => parseRecipe(recipeWith({ curious_prompt: "" }))).toThrow(
+      "curious_prompt",
+    );
+  });
+
+  it("rejects an empty pain_prompt", () => {
+    expect(() => parseRecipe(recipeWith({ pain_prompt: "" }))).toThrow(
+      "pain_prompt",
+    );
   });
 
   it("rejects an empty nausea_prompt", () => {

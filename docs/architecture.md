@@ -13,8 +13,8 @@ Magic Hour draws the new pixels. It does not guarantee a stable canvas. Face Edi
 ```text
 upload → validate → canonical 1024 plate (the smile)
                          │
-                         ├─ Face Editor ─ curious, pain, 24 gazes, 2 blinks
-                         └─ Image Editor ─ nausea (and pain, if the sliders miss)
+                         ├─ Face Editor ─ 24 gazes, 2 blinks
+                         └─ Image Editor ─ curious, pain, nausea
                          │
                     plate locker
                       align onto the smile
@@ -56,13 +56,13 @@ Documented behavior we are designing around, from the Magic Hour API reference a
 | Plate | Endpoint | Intent |
 | --- | --- | --- |
 | Smile | None | Canonical crop of the upload. |
-| Curious | Face Editor | Brows up, eyes slightly wider, mouth a little open. Small slider deltas from zero. |
+| Curious | Image Editor | Fixed prompt: slightly raised eyebrows, subtly widened eyes, gently parted mouth. |
 | Gaze, 24 cells | Face Editor | `eye_gaze_horizontal` and `eye_gaze_vertical` at -100, -50, 0, 50, 100. The center cell is the smile and is not requested. Other sliders stay 0. |
 | Half blink, shut | Face Editor | `eye_open_ratio` at two negative steps. The exact steps come from calibration. |
-| Pain | Face Editor, then Image Editor if the gate fails | Grimace, squinted eyes, brows down. One Image Editor retry is allowed. |
-| Nausea | Image Editor | Prompt asks for crossed eyes and tongue out, and for the hair, clothes, background, crop, and lighting to stay. |
+| Pain | Image Editor | Fixed prompt: slightly furrowed eyebrows, narrowed eyes, tension around the nose and mouth. |
+| Nausea | Image Editor | Fixed prompt: furrowed eyebrows, narrowed eyes, a wrinkled nose, and a tense downturned mouth. |
 
-Slider signs are not documented as “up” versus “down”. A calibration portrait is committed in the repo. The recipe file maps each plate to slider values that pass the gate on that portrait. Runtime uses the recipe. It does not improvise prompts per user beyond the fixed nausea prompt and the fixed pain-retry prompt.
+Slider signs are not documented as “up” versus “down”. A calibration portrait is committed in the repo. The recipe freezes gaze and blink slider values, and the three expression prompts. Runtime uses the recipe. It does not improvise prompts. The three expression prompts are fixed in the recipe. Pain does not switch endpoints on retry; a retry repeats the same prompt.
 
 Jobs for one face run with bounded parallelism, four at a time, so a gaze sheet does not stampede that person’s Magic Hour account. The open page starts each wave and sends the key again with it. Nothing in the queue holds the key, so a closed or reloaded page stops the wave until they paste it again. Order of usefulness: curious and pain first, then nausea, then gaze from the center outward, then blinks. The preview can start before the outer gaze cells exist. Missing cells fall back to the nearest ready cell, then to the center.
 
@@ -117,7 +117,7 @@ Input: the canonical smile and one Magic Hour result. Output: a 1024×1024 plate
 8. **Cut.** Gaze and blink patches are cut from the composited plate, with the smile’s rects, and packed into the sheet. Full-face plates are the composited 1024 image.
 9. **Encode.** One WebP setting for every file in the bundle, so a crossfade does not shimmer at the mask edge.
 
-Each generated plate is attempted twice inside the worker (the first call, then one retry). Pain’s second attempt may switch to Image Editor. Nausea’s retry uses the same prompt. After those two attempts the plate is marked failed. From the preview, the person may regenerate pain or nausea up to two more times each. Those presses spend the same per-plate path and do not rerun the smile or the gaze sheet.
+Each generated plate is attempted twice inside the worker (the first call, then one retry). Pain does not switch endpoints on retry. A retry of curious, pain, or nausea repeats that plate’s one prompt. After those two attempts the plate is marked failed. From the preview, the person may regenerate pain or nausea up to two more times each. Those presses spend the same per-plate path and do not rerun the smile or the gaze sheet.
 
 The smile is never sent through Magic Hour. It is the plate the others are glued to, and the source of gaze cell 12.
 
@@ -262,7 +262,7 @@ A face row stores: id, status, plate statuses, retry counts, manifest path, sour
 
 The preview page is `/f/:id`. It is the upload result, the plate contact sheet, the live widget pointed at the draft manifest, and the snippet after accept.
 
-Rate limit `POST /api/faces` and `POST /api/faces/:id/advance` by IP. A single face is on the order of 30 Face Editor credits plus one or two Image Editor calls, billed to the Magic Hour account that owns the pasted key.
+Rate limit `POST /api/faces` and `POST /api/faces/:id/advance` by IP. A single face is on the order of 26 Face Editor credits plus three Image Editor calls, billed to the Magic Hour account that owns the pasted key.
 
 ## Data
 
@@ -304,11 +304,10 @@ Per face, happy path, using published starting prices:
 | Work | Calls | Credits, about |
 | --- | --- | --- |
 | Smile | 0 | 0 |
-| Curious, pain, 24 gazes, 2 blinks | 28 Face Editor calls | 28 |
-| Nausea | 1 `qwen-edit` | from 10 |
-| Pain retry, only if needed | 1 Image Editor | from 10 |
+| 24 gazes, 2 blinks | 26 Face Editor calls | 26 |
+| Curious, pain, nausea | 3 Image Editor calls | from 30 |
 
-About 40 credits when pain succeeds on the first try, and about 50 when it does not, on the Magic Hour account for the key they pasted. Retries are capped so a bad photo cannot loop. The canonical smile is uploaded once and reused as `image_file_path` for every call.
+About 60 credits on the happy path, on the Magic Hour account for the key they pasted. A retry of curious, pain, or nausea is another Image Editor call. Retries are capped so a bad photo cannot loop. The canonical smile is uploaded once and reused as `image_file_path` for every call.
 
 ## Security and likeness
 
@@ -325,7 +324,7 @@ The reference site’s engine is a specific WebGL toy with its own idle script. 
 ## Build order
 
 1. **Locker and fixtures.** Canonical crop, similarity align, the held-out nose check, the gaze-socket check, the mask paste, the halo check, and the 1:1 eye-sheet cut. Tested on still photos before any API spend. The center cell of a fixture sheet must be a byte copy of that fixture’s smile.
-2. **Recipe calibration.** One portrait through Face Editor until curious, pain, gaze, and blink pass the locker. Freeze the slider values. One nausea prompt through `qwen-edit` until the tongue and the cross-eye survive the mask.
+2. **Recipe calibration.** Freeze the gaze and blink Face Editor sliders. Curious, pain, and nausea are the fixed Image Editor prompts, not Face Editor slider plates.
 3. **Job runner.** Upload route, face rows, parallel plate jobs, manifest writes, preview page with the contact sheet.
 4. **Widget.** Smile img, mesh stretch, spring, the four-state machine, gaze sheet, blinks, keyboard tug, reduced motion, 2D fallback.
 5. **Embed pass.** A blank HTML file on another origin loads the script and the manifest. Touch on a phone. Two faces on one page.
