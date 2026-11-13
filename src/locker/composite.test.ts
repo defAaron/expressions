@@ -136,15 +136,19 @@ describe("compositePlate", () => {
     const aligned = rgbaImage(SIZE, SIZE, [8, 8, 8, 255]);
     const mask = maskFor("curious", eyes, SIZE);
     expect(mask[33 * SIZE + 0]).toBe(0);
-    expect(mask[2 * SIZE + 8]).toBe(255);
-    writePixel(aligned, 8, 2, [70, 80, 90, 255]);
+    expect(mask[eyes.mouthCenter.y * SIZE + eyes.mouthCenter.x]).toBe(255);
+    writePixel(aligned, eyes.mouthCenter.x, eyes.mouthCenter.y, [
+      70, 80, 90, 255,
+    ]);
 
     const result = compositePlate(smile, eyes, aligned, "curious");
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(readPixel(result.image, 0, 33)).toEqual([8, 8, 8, 255]);
-    expect(readPixel(result.image, 8, 2)).toEqual([70, 80, 90, 255]);
+    expect(readPixel(result.image, eyes.mouthCenter.x, eyes.mouthCenter.y)).toEqual([
+      70, 80, 90, 255,
+    ]);
   });
 
   it("returns alignment-failed when the aligned plate size differs", () => {

@@ -110,8 +110,7 @@ Input: the canonical smile and one Magic Hour result. Output: a 1024×1024 plate
 4. **Gaze socket.** For a gaze or blink result, each pupil center must land inside that eye’s smile rect, inset by 4 pixels. The outer corner of each eye may move at most 2 pixels. An edit that slid the whole socket would put the iris outside the rect we are about to cut.
 5. **Mask, then composite.**
    - Gaze and blinks: the two eye rects, feathered about 8 pixels.
-   - Curious and pain: brows, eyes, and mouth. Ears, hair, and jawline stay on the smile.
-   - Nausea: that same region, extended down across the open mouth far enough to include a tongue. Changed pixels that sit outside this mask, beyond the feather, reject the image. Pasting the smile back over a shirt the model redrew would leave a halo, so the reject happens on the aligned result, before the paste.
+   - Curious, pain, and nausea share one ellipse over the brows, eyes, cheeks, and mouth, tall enough that the smile’s mouth is inside it. Ears, hair, and jawline stay on the smile. Changed pixels that sit outside this mask, beyond the feather, reject the image. Pasting the smile back over a shirt the model redrew would leave a halo, so the reject happens on the aligned result, before the paste.
 6. **Paste.** Copy the masked pixels onto the smile. Everything outside the mask is the smile.
 7. **Halo.** Along the mask boundary, if the composited image grows an edge the smile does not have, reject. That is a face that was still a few pixels off after the align.
 8. **Cut.** Gaze and blink patches are cut from the composited plate, with the smile’s rects, and packed into the sheet. Full-face plates are the composited 1024 image.

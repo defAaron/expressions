@@ -2,9 +2,13 @@ import {
   CANVAS_SIZE,
   FEATHER_PX,
   type PlateName,
+  type Point,
   type Rect,
   type SmileLandmarks,
 } from "./types";
+
+// 32px on a 1024 plate. Smaller plates keep the same fraction of the canvas.
+const EXPRESSION_FALLOFF_PX = 32;
 
 function expandRect(rect: Rect, px: number): Rect {
   return {
@@ -56,26 +60,119 @@ function valueForFeatheredRect(px: number, py: number, base: Rect): number {
   return Math.round(255 * (1 - d / FEATHER_PX));
 }
 
-function collectRects(plate: PlateName, landmarks: SmileLandmarks): Rect[] {
+type Ellipse = { cx: number; cy: number; rx: number; ry: number };
+
+function rectCorners(rect: Rect): Point[] {
+  return [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x, y: rect.y + rect.height },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+  ];
+}
+
+function expressionCoverPoints(landmarks: SmileLandmarks): Point[] {
+  const tongue = mouthRect(landmarks, landmarks.leftEye.height);
+  return [
+    ...rectCorners(eyeWithBrowExtension(landmarks.leftEye)),
+    ...rectCorners(eyeWithBrowExtension(landmarks.rightEye)),
+    ...rectCorners(tongue),
+  ];
+}
+
+function expressionEllipse(landmarks: SmileLandmarks): Ellipse {
+  const left = landmarks.leftEye;
+  const right = landmarks.rightEye;
+  const cheekLeft = left.x - left.width;
+  const cheekRight = right.x + right.width + right.width;
+  const cx = (cheekLeft + cheekRight) / 2;
+  let rx = (cheekRight - cheekLeft) / 2;
+
+  const samples = expressionCoverPoints(landmarks);
+  const anchorY =
+    samples.reduce((sum, point) => sum + point.y, 0) / samples.length;
+  const cover = samples.map((point) => {
+    const dx = point.x - cx;
+    const dy = point.y - anchorY;
+    const length = Math.hypot(dx, dy) || 1;
+    return { x: point.x + dx / length, y: point.y + dy / length };
+  });
+  for (const point of cover) {
+    const dx = Math.abs(point.x - cx);
+    if (dx >= rx) rx = dx + 1;
+  }
+
+  const scaled = cover.map((point) => ({
+    y: point.y,
+    reach: Math.sqrt(Math.max(0, 1 - ((point.x - cx) / rx) ** 2)),
+  }));
+  let ry = 0;
+  for (const above of scaled) {
+    for (const below of scaled) {
+      const span = above.reach + below.reach;
+      if (span <= 0) continue;
+      ry = Math.max(ry, (above.y - below.y) / span);
+    }
+  }
+
+  let lo = -Infinity;
+  let hi = Infinity;
+  for (const point of scaled) {
+    lo = Math.max(lo, point.y - ry * point.reach);
+    hi = Math.min(hi, point.y + ry * point.reach);
+  }
+
+  return { cx, cy: (lo + hi) / 2, rx, ry };
+}
+
+function expressionCoverage(
+  px: number,
+  py: number,
+  ellipse: Ellipse,
+  falloff: number,
+): number {
+  const dx = px - ellipse.cx;
+  const dy = py - ellipse.cy;
+  const norm = Math.hypot(dx / ellipse.rx, dy / ellipse.ry);
+  if (norm <= 1) {
+    return 255;
+  }
+  const fromCenter = Math.hypot(dx, dy);
+  const outside = fromCenter - fromCenter / norm;
+  if (outside >= falloff) {
+    return 0;
+  }
+  const faded = Math.round(255 * (1 - outside / falloff));
+  return Math.min(254, Math.max(1, faded));
+}
+
+function expressionMask(landmarks: SmileLandmarks, size: number): Uint8Array {
+  const mask = new Uint8Array(size * size);
+  const ellipse = expressionEllipse(landmarks);
+  const falloff = (EXPRESSION_FALLOFF_PX * size) / CANVAS_SIZE;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      mask[y * size + x] = expressionCoverage(
+        x + 0.5,
+        y + 0.5,
+        ellipse,
+        falloff,
+      );
+    }
+  }
+  return mask;
+}
+
+function collectRects(
+  plate: "smile" | "gaze" | "blink",
+  landmarks: SmileLandmarks,
+): Rect[] {
   switch (plate) {
     case "smile":
       return [];
     case "gaze":
     case "blink":
       return [landmarks.leftEye, landmarks.rightEye];
-    case "curious":
-    case "pain":
-      return [
-        eyeWithBrowExtension(landmarks.leftEye),
-        eyeWithBrowExtension(landmarks.rightEye),
-        mouthRect(landmarks),
-      ];
-    case "nausea":
-      return [
-        eyeWithBrowExtension(landmarks.leftEye),
-        eyeWithBrowExtension(landmarks.rightEye),
-        mouthRect(landmarks, landmarks.leftEye.height),
-      ];
   }
 }
 
@@ -84,6 +181,10 @@ export function maskFor(
   landmarks: SmileLandmarks,
   size: number = CANVAS_SIZE,
 ): Uint8Array {
+  if (plate === "curious" || plate === "pain" || plate === "nausea") {
+    return expressionMask(landmarks, size);
+  }
+
   const mask = new Uint8Array(size * size);
   const rects = collectRects(plate, landmarks);
 
