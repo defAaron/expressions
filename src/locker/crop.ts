@@ -354,7 +354,7 @@ export async function cropToSmile(
   if (!square) {
     return reject(
       "upscale-too-large",
-      "Face is too small to fill 1024 without upscaling past 1.5×.",
+      `Face is too small to fill 1024 without upscaling past ${MAX_UPSCALE}×.`,
     );
   }
 

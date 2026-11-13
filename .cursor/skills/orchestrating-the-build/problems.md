@@ -20,7 +20,7 @@ Security gate: required.
 
 ## 2. Plate locker and canonical crop
 
-Done when, with no Magic Hour calls, tests prove: type and size gates (JPEG, PNG, WebP, 15 MB, one face, both eyes, upscale at most 1.5×), 1024 smile crop, similarity align, held-out nose beyond 2% of face width rejects, gaze socket checks, mask paste, halo reject, and a gaze sheet whose center cell is a byte copy of the smile's eyes. Spec: architecture sections "Canonical crop", "Stitch contract", "What the locker checks".
+Done when, with no Magic Hour calls, tests prove: type and size gates (JPEG, PNG, WebP, 15 MB, one face, both eyes, upscale at most 4×), 1024 smile crop, similarity align, held-out nose beyond 2% of face width rejects, gaze socket checks, mask paste, halo reject, and a gaze sheet whose center cell is a byte copy of the smile's eyes. Spec: architecture sections "Canonical crop", "Stitch contract", "What the locker checks".
 
 Security gate: required. Untrusted images stay inside the size, type, and decode limits. The locker makes no network call.
 

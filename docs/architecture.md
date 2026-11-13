@@ -126,7 +126,7 @@ The smile is never sent through Magic Hour. It is the plate the others are glued
 Before any Magic Hour call:
 
 1. Decode the upload, cap the long edge at 2048 for detection, keep the original for the crop.
-2. Require one face, both eyes visible, face large enough to fill 1024 without upscaling past 1.5×.
+2. Require one face, both eyes visible, face large enough to fill 1024 without upscaling past 4×.
 3. Crop a square centered on the face, with padding above the hair and below the chin so a stretch has skin to pull. The face occupies roughly the middle 55% of the square. Record the crop rectangle.
 4. Resize that square to 1024×1024 with a high-quality resample. This file is `smile.webp` and the only pixels the widget will treat as ground truth.
 5. Write landmark metadata: left eye rect, right eye rect, point between the pupils, mouth center, all in 1024 space. The widget aims gaze from the pupil point. The locker uses the rects.

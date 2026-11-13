@@ -1,7 +1,7 @@
 export const CANVAS_SIZE = 1024;
 export const DETECTION_LONG_EDGE = 2048;
 export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
-export const MAX_UPSCALE = 1.5;
+export const MAX_UPSCALE = 4;
 export const NOSE_TOLERANCE_OF_FACE_WIDTH = 0.02;
 export const SOCKET_INSET_PX = 4;
 export const OUTER_CORNER_MAX_PX = 2;

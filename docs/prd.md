@@ -144,7 +144,7 @@ Yawn frames, whistle frames, a doze sequence, shock as its own plate, an annoyed
 
 ## Upload rules
 
-The photo is a head-and-shoulders or a tight headshot, one adult face, looking at the camera, eyes and mouth unobstructed, reasonably sharp. The long edge should be at least 1024 pixels. Smaller photos are rejected with a plain reason.
+The photo is a head-and-shoulders or a tight headshot, one adult face, looking at the camera, eyes and mouth unobstructed, reasonably sharp.
 
 The uploader confirms the photo is their own face, or that they have the right to use that likeness. The product stores the photo to build the bundle and deletes it when the bundle is deleted.
 
@@ -152,7 +152,7 @@ Rejected uploads:
 
 - No face, or more than one face.
 - Face turned far enough that both eyes are not usable.
-- Face smaller than the crop can fill at 1024×1024 without upscaling past 1.5×.
+- Face smaller than the crop can fill at 1024×1024 without upscaling past 4×.
 - File that is not a JPEG, PNG, or WebP, or larger than 15 MB.
 
 ## Consistency bar

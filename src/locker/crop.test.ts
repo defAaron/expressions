@@ -278,20 +278,24 @@ describe("cropToSmile", () => {
     expect(rejectionCode(result)).toBe("eyes-not-visible");
   });
 
-  it("rejects a face span that needs upscale above 1.5", async () => {
+  it("rejects a tiny face", async () => {
     const bytes = await encode("png", 400, 400);
     const { detect, calls } = recordingDetector([face(rect(10, 10, 20, 30))]);
 
     const result = await cropToSmile({ bytes, mediaType: "image/png" }, detect);
 
     expect(calls).toHaveLength(1);
-    expect(MAX_UPSCALE).toBe(1.5);
+    expect(MAX_UPSCALE).toBe(4);
     expect(rejectionCode(result)).toBe("upscale-too-large");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.rejection.message.length).toBeGreaterThan(0);
+    if (!result.ok) {
+      expect(result.rejection.message).toBe(
+        `Face is too small to fill 1024 without upscaling past ${MAX_UPSCALE}×.`,
+      );
+    }
   });
 
-  it("accepts a face whose upscale is exactly 1.5", async () => {
+  it("accepts a face whose upscale is exactly 4", async () => {
     const bytes = await encode("png", 900, 900);
     const faceSpan = (CANVAS_SIZE * 0.55) / MAX_UPSCALE;
     const { detect } = recordingDetector([
@@ -304,6 +308,36 @@ describe("cropToSmile", () => {
     if (!result.ok) return;
     expect(result.image.width).toBe(CANVAS_SIZE);
     expect(result.image.height).toBe(CANVAS_SIZE);
+  });
+
+  it("accepts a face whose upscale is 2", async () => {
+    const bytes = await encode("png", 900, 900);
+    const faceSpan = (CANVAS_SIZE * 0.55) / 2;
+    const { detect } = recordingDetector([
+      face(rect(100, 100, faceSpan, faceSpan / 2)),
+    ]);
+
+    const result = await cropToSmile({ bytes, mediaType: "image/png" }, detect);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.image.width).toBe(CANVAS_SIZE);
+    expect(result.image.height).toBe(CANVAS_SIZE);
+  });
+
+  it("rejects a face that needs upscale just over 4", async () => {
+    const bytes = await encode("png", 900, 900);
+    const faceSpan = (CANVAS_SIZE * 0.55) / (MAX_UPSCALE + 1e-4);
+    expect(1024 / (faceSpan / 0.55)).toBeGreaterThan(4);
+    const { detect, calls } = recordingDetector([
+      face(rect(100, 100, faceSpan, faceSpan / 2)),
+    ]);
+
+    const result = await cropToSmile({ bytes, mediaType: "image/png" }, detect);
+
+    expect(calls).toHaveLength(1);
+    expect(rejectionCode(result)).toBe("upscale-too-large");
+    expect(result.ok).toBe(false);
   });
 
   it("crops a centered face to 1024 and maps the box center to the canvas center", async () => {
