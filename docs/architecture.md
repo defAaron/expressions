@@ -48,7 +48,7 @@ Documented behavior we are designing around, from the Magic Hour API reference a
 
 - `POST /v1/ai-face-editor` edits one face with numeric sliders. Each edit costs 1 frame. Sliders run from -100 to 100 in steps of 5. Relevant sliders: `eye_gaze_horizontal`, `eye_gaze_vertical`, `eye_open_ratio`, `eyebrow_direction`, `mouth_smile`, `mouth_grim`, `lip_open_ratio`, `mouth_position_vertical`, `head_pitch`, `head_yaw`, `head_roll`. `enhance_face` stays `false` on every call. There is no tongue slider, and one horizontal gaze value moves both eyes together, so this endpoint cannot make the nausea plate.
 - Output width and height for Face Editor follow the account plan. We treat every Face Editor result as an unaligned image and force it onto the 1024 plate.
-- `POST /v1/ai-image-editor` takes the source image plus a prompt. `qwen-edit` is the first model to try for nausea: it is an edit model, it supports a 1k long edge, and it starts at 10 credits. If identity slips in the calibration bake-off, the recipe switches model. The bake-off is a checked-in fixture, not a runtime guess.
+- `POST /v1/ai-image-editor` takes the source image plus a prompt. The three expression plates use `gpt-image-2` at 1k, from 50 credits each, and this model is not on the free tier. If identity slips in the calibration bake-off, the recipe switches model. The bake-off is a checked-in fixture, not a runtime guess.
 - Both endpoints return a project id and `credits_charged`. The image is fetched from the project once its status is complete. Failed projects refund credits on their side. We still record the failure and retry the plate.
 
 ### Routing
@@ -304,9 +304,9 @@ Per face, happy path, using published starting prices:
 | --- | --- | --- |
 | Smile | 0 | 0 |
 | 24 gazes, 2 blinks | 26 Face Editor calls | 26 |
-| Curious, pain, nausea | 3 Image Editor calls | from 30 |
+| Curious, pain, nausea | 3 Image Editor calls | from 150 |
 
-About 60 credits on the happy path, on the Magic Hour account for the key they pasted. A retry of curious, pain, or nausea is another Image Editor call. Retries are capped so a bad photo cannot loop. The canonical smile is uploaded once and reused as `image_file_path` for every call.
+The happy path is 26 Face Editor credits plus three Image Editor calls, about 180 credits, on the Magic Hour account for the key they pasted. A retry of curious, pain, or nausea is another Image Editor call at that same price. Retries are capped so a bad photo cannot loop. The canonical smile is uploaded once and reused as `image_file_path` for every call.
 
 ## Security and likeness
 
