@@ -58,6 +58,12 @@ type FaceTestApi = {
     getContext: (type: string) => unknown;
   }) => "webgl" | "2d" | "img";
   makeSpringState: (reduced: boolean) => SpringState;
+  bindSpringMatte: (
+    spring: SpringState,
+    matte:
+      | ((px: number, py: number) => number)
+      | { width: number; height: number; data: ArrayLike<number> },
+  ) => boolean;
   springUsesOvershoot: (state: SpringState) => boolean;
   rubberBand: (travel: number, plateWidth: number) => number;
   stepMesh: (
@@ -384,6 +390,77 @@ describe("face.js mesh displacement", () => {
       api.stepMesh(spring, engine, 16);
       still(512, 980);
       still(0, 0);
+    }
+  });
+
+  it("moves the hair and a shoulder with a cheek tug while the background stays put", () => {
+    const api = loadFaceApi();
+    const spring = api.makeSpringState(false);
+    const cells = 64;
+    const data = new Uint8Array(cells * cells);
+    const personAt = (px: number, py: number) => {
+      const head = ((px - 512) / 300) ** 2 + ((py - 380) / 340) ** 2 <= 1;
+      const body = py >= 520 && px >= 120 && px <= 920;
+      return head || body;
+    };
+    for (let j = 0; j < cells; j++) {
+      for (let i = 0; i < cells; i++) {
+        const px = (i / cells) * api.PLATE;
+        const py = (j / cells) * api.PLATE;
+        data[j * cells + i] = personAt(px, py) ? 255 : 0;
+      }
+    }
+    expect(
+      api.bindSpringMatte(spring, { width: cells, height: cells, data }),
+    ).toBe(true);
+    expect(personAt(420, 520)).toBe(true);
+    expect(personAt(512, 180)).toBe(true);
+    expect(personAt(700, 900)).toBe(true);
+    expect(personAt(0, 0)).toBe(false);
+    expect(personAt(40, 400)).toBe(false);
+
+    const grab = { x: 420, y: 520 };
+    const pointer = { x: grab.x + api.PLATE * 0.18, y: grab.y };
+    let grabbing = true;
+    const engine = {
+      isGrabbing: () => grabbing,
+      _grabPlateX: grab.x,
+      _grabPlateY: grab.y,
+      getPointer: () => ({
+        x: pointer.x,
+        y: pointer.y,
+        onFace: true,
+        type: "mouse",
+      }),
+    };
+    const still = (x: number, y: number) => {
+      const v = vertAt(spring, api.PLATE, x, y);
+      expect(Math.hypot(v.x - v.ox, v.y - v.oy)).toBeLessThan(0.5);
+    };
+    for (let frame = 0; frame < 40; frame++) {
+      api.stepMesh(spring, engine, 16);
+      still(0, 0);
+      still(40, 400);
+    }
+
+    const dx = (x: number, y: number) => {
+      const v = vertAt(spring, api.PLATE, x, y);
+      return v.x - v.ox;
+    };
+    const cheek = dx(grab.x, grab.y);
+    const hair = dx(512, 180);
+    const shoulder = dx(700, 900);
+    expect(cheek).toBeGreaterThan(api.PLATE * 0.08);
+    expect(hair).toBeGreaterThan(8);
+    expect(shoulder).toBeGreaterThan(8);
+    expect(hair).toBeLessThan(cheek);
+    expect(shoulder).toBeLessThan(cheek);
+
+    grabbing = false;
+    for (let frame = 0; frame < 12; frame++) {
+      api.stepMesh(spring, engine, 16);
+      still(0, 0);
+      still(40, 400);
     }
   });
 

@@ -44,14 +44,15 @@
   var HEAD_SHIFT_GAIN = 0.5;
   var HEAD_SHIFT_CAP = 0.08;
   // Soft sheet. A grab is a brush on the already-deformed picture; the rest
-  // of the head is a damped membrane, so a pull travels through the features
-  // instead of stopping at a circle. Nodes outside the head stay pinned.
+  // of the person is a damped membrane, so a pull travels through the hair
+  // and the shoulders. Background and the frame stay pinned. With no matte,
+  // the head ellipse is the person.
   // ü = c²∇²u − ω²u − γu̇ + ν∇²u̇
-  // Overall-shape fluidity is reach and flesh (how far and how viscously the
-  // silhouette flows) against hz and damp (how fast it returns, how little it
-  // sloshes). These four are 15% less fluid than the previous tune.
+  // Reach is how far a pull spreads, as a fraction of the plate. Flesh is
+  // how viscously the silhouette flows. Hz and damp are how fast it returns
+  // and how little it sloshes.
   var SHEET_HZ = 2.645;
-  var SHEET_REACH = 0.07225;
+  var SHEET_REACH = 0.24;
   var SHEET_DAMP = 0.161;
   var SHEET_FLESH = 0.2975;
   var SHEET_HARDEST = 8;
@@ -440,8 +441,8 @@
     return nx * nx + ny * ny >= 1;
   }
 
-  // Distance in plate pixels to the nearer of the ellipse edge and the neck.
-  // Zero outside the head. Used to fade motion so the head does not tear.
+  // Ellipse fallback when no person matte is bound. Distance in plate pixels
+  // to the nearer of the ellipse edge and the neck. Zero outside the head.
   function headGap(px, py) {
     if (py >= NECK_Y) return 0;
     var dx = px - HEAD_CX;
@@ -464,10 +465,23 @@
   }
 
   // 0 at the neck, 1 at the crown, so a tug pivots about the base of the neck.
+  // Used only until a person matte is bound.
   function neckLever(py) {
     var span = NECK_Y - (HEAD_CY - HEAD_RY);
     if (!(span > 0)) return 0;
     var t = (NECK_Y - py) / span;
+    if (t < 0) return 0;
+    if (t > 1) return 1;
+    return t;
+  }
+
+  // 0 at the bottom of the person, 1 at the top. The head moves more than the
+  // shoulders, and shoulders above the hinge still move. No matte: neck hinge.
+  function bodyLever(spring, py) {
+    if (!spring || !spring.hasMatte) return neckLever(py);
+    var span = spring.bodyPivot - spring.bodyTop;
+    if (!(span > 0)) return 0;
+    var t = (spring.bodyPivot - py) / span;
     if (t < 0) return 0;
     if (t > 1) return 1;
     return t;
@@ -500,6 +514,7 @@
         var border = i === 0 || j === 0 || i === cells || j === cells;
         var px = (i / cells) * PLATE;
         var py = (j / cells) * PLATE;
+        // No matte yet: pin the frame and everything outside the head ellipse.
         fixed[j * n + i] = border || headOutside(px, py) ? 1 : 0;
       }
     }
@@ -534,6 +549,178 @@
       _displaced: 0,
       _far: 0,
     };
+  }
+
+  function smooth01(u) {
+    if (u <= 0) return 0;
+    if (u >= 1) return 1;
+    return u * u * (3 - 2 * u);
+  }
+
+  // Luminance above this is the person. At or below it, the node stays pinned.
+  var PERSON_LUMA = 0.5;
+  // How far above the cut a soft matte ramps to full weight.
+  var PERSON_SOFT = 0.35;
+
+  function channelLuma(r, g, b) {
+    var l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (!(l > 0)) return 0;
+    if (l > 1) l = l / 255;
+    if (l > 1) l = 1;
+    return l;
+  }
+
+  function lumaReader(matte) {
+    if (!matte) return null;
+    if (typeof matte === "function") {
+      return function (px, py) {
+        var v = +matte(px, py);
+        if (!(v > 0)) return 0;
+        if (v <= 1) return v;
+        return v >= 255 ? 1 : v / 255;
+      };
+    }
+    var data = matte.data;
+    var width = matte.width;
+    var height = matte.height;
+    if (!data && width > 0 && height > 0) {
+      var doc = global.document;
+      if (!doc || !doc.createElement) return null;
+      try {
+        var canvas = doc.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        var g = canvas.getContext && canvas.getContext("2d");
+        if (!g || !g.drawImage || !g.getImageData) return null;
+        g.drawImage(matte, 0, 0, width, height);
+        var image = g.getImageData(0, 0, width, height);
+        data = image.data;
+        width = image.width;
+        height = image.height;
+      } catch (err) {
+        return null;
+      }
+    }
+    if (!data || !(width > 0) || !(height > 0)) return null;
+    var pixels = width * height;
+    var stride = 1;
+    if (data.length >= pixels * 4) stride = 4;
+    else if (data.length >= pixels * 3) stride = 3;
+    return function (px, py) {
+      var x = Math.floor((px / PLATE) * width);
+      var y = Math.floor((py / PLATE) * height);
+      if (x < 0) x = 0;
+      if (y < 0) y = 0;
+      if (x > width - 1) x = width - 1;
+      if (y > height - 1) y = height - 1;
+      var i = (y * width + x) * stride;
+      if (stride === 1) {
+        var s = data[i];
+        if (!(s > 0)) return 0;
+        return s > 1 ? s / 255 : s;
+      }
+      return channelLuma(data[i], data[i + 1], data[i + 2]);
+    };
+  }
+
+  // Pin from the person matte: free on the body, pinned on the background and
+  // the frame. Feather near the silhouette so the edge does not tear.
+  function bindSpringMatte(spring, matte) {
+    if (!spring || !spring.fixed || !matte) return false;
+    var read = lumaReader(matte);
+    if (!read) return false;
+    var cells = spring.cells;
+    var n = spring.n;
+    var count = n * n;
+    var nextFixed = new Uint8Array(count);
+    var luma = new Float32Array(count);
+    var top = PLATE;
+    var bottom = 0;
+    var person = 0;
+    var j;
+    var i;
+    var k;
+    try {
+      for (j = 0; j < n; j++) {
+        for (i = 0; i < n; i++) {
+          k = j * n + i;
+          var border = i === 0 || j === 0 || i === cells || j === cells;
+          var px = (i / cells) * PLATE;
+          var py = (j / cells) * PLATE;
+          var lum = read(px, py);
+          if (!(lum > 0)) lum = 0;
+          if (lum > 1) lum = 1;
+          luma[k] = lum;
+          nextFixed[k] = !border && lum > PERSON_LUMA ? 0 : 1;
+          if (lum > PERSON_LUMA) {
+            person++;
+            if (py < top) top = py;
+            if (py > bottom) bottom = py;
+          }
+        }
+      }
+    } catch (err2) {
+      return false;
+    }
+    if (!(person > 0) || !(bottom > top)) return false;
+
+    var cellPx = PLATE / cells;
+    var diag = cellPx * Math.SQRT2;
+    var dist = new Float32Array(count);
+    var INF = 1e9;
+    for (k = 0; k < count; k++) dist[k] = nextFixed[k] ? 0 : INF;
+    for (j = 0; j < n; j++) {
+      for (i = 0; i < n; i++) {
+        k = j * n + i;
+        var best = dist[k];
+        if (i > 0 && dist[k - 1] + cellPx < best) best = dist[k - 1] + cellPx;
+        if (j > 0 && dist[k - n] + cellPx < best) best = dist[k - n] + cellPx;
+        if (i > 0 && j > 0 && dist[k - n - 1] + diag < best) best = dist[k - n - 1] + diag;
+        if (i + 1 < n && j > 0 && dist[k - n + 1] + diag < best) {
+          best = dist[k - n + 1] + diag;
+        }
+        dist[k] = best;
+      }
+    }
+    for (j = n - 1; j >= 0; j--) {
+      for (i = n - 1; i >= 0; i--) {
+        k = j * n + i;
+        var bestB = dist[k];
+        if (i + 1 < n && dist[k + 1] + cellPx < bestB) bestB = dist[k + 1] + cellPx;
+        if (j + 1 < n && dist[k + n] + cellPx < bestB) bestB = dist[k + n] + cellPx;
+        if (i + 1 < n && j + 1 < n && dist[k + n + 1] + diag < bestB) {
+          bestB = dist[k + n + 1] + diag;
+        }
+        if (i > 0 && j + 1 < n && dist[k + n - 1] + diag < bestB) {
+          bestB = dist[k + n - 1] + diag;
+        }
+        dist[k] = bestB;
+      }
+    }
+
+    var weight = new Float32Array(count);
+    var band = HEAD_FALLOFF * PLATE;
+    for (k = 0; k < count; k++) {
+      if (nextFixed[k]) {
+        weight[k] = 0;
+        spring.ux[k] = 0;
+        spring.uy[k] = 0;
+        spring.vx[k] = 0;
+        spring.vy[k] = 0;
+        spring.ax[k] = 0;
+        spring.ay[k] = 0;
+        continue;
+      }
+      var edgeT = band > 0 ? dist[k] / band : 1;
+      var lumaT = (luma[k] - PERSON_LUMA) / PERSON_SOFT;
+      weight[k] = smooth01(lumaT) * smooth01(edgeT);
+    }
+    spring.fixed = nextFixed;
+    spring.weight = weight;
+    spring.hasMatte = true;
+    spring.bodyTop = top;
+    spring.bodyPivot = bottom;
+    return true;
   }
 
   /**
@@ -735,49 +922,48 @@
     if (!isFinite(spring._moving + spring._displaced + spring._far)) sheetSettle(spring);
   }
 
-  function syncSheet(spring) {
+  function sampleGrid(spring, field, px, py) {
     var sn = spring.n;
     var sc = spring.cells;
-    var scale = PLATE / sc;
+    var gx = (px / PLATE) * sc;
+    var gy = (py / PLATE) * sc;
+    var j0 = gy < 0 ? 0 : gy > sc - 1 ? sc - 1 : gy | 0;
+    var i0 = gx < 0 ? 0 : gx > sc - 1 ? sc - 1 : gx | 0;
+    var fy = gy - j0;
+    var fx = gx - i0;
+    if (fy < 0) fy = 0;
+    if (fy > 1) fy = 1;
+    if (fx < 0) fx = 0;
+    if (fx > 1) fx = 1;
+    var row0 = j0 * sn;
+    var row1 = row0 + sn;
+    var a = row0 + i0;
+    return (
+      field[a] * (1 - fx) * (1 - fy) +
+      field[a + 1] * fx * (1 - fy) +
+      field[row1 + i0] * (1 - fx) * fy +
+      field[row1 + i0 + 1] * fx * fy
+    );
+  }
+
+  function syncSheet(spring) {
+    var scale = PLATE / spring.cells;
     var ux = spring.ux;
     var uy = spring.uy;
     var verts = spring.verts;
+    var weight = spring.weight;
     var rn = Math.round(Math.sqrt(verts.length));
-    var rc = rn - 1;
+    var useMatte = !!(spring.hasMatte && weight);
     for (var j = 0; j < rn; j++) {
-      var gy = (j / rc) * sc;
-      var j0 = gy < 0 ? 0 : gy > sc - 1 ? sc - 1 : gy | 0;
-      var fy = gy - j0;
-      if (fy < 0) fy = 0;
-      if (fy > 1) fy = 1;
-      var row0 = j0 * sn;
-      var row1 = row0 + sn;
       for (var i = 0; i < rn; i++) {
-        var gx = (i / rc) * sc;
-        var i0 = gx < 0 ? 0 : gx > sc - 1 ? sc - 1 : gx | 0;
-        var fx = gx - i0;
-        if (fx < 0) fx = 0;
-        if (fx > 1) fx = 1;
-        var a = row0 + i0;
-        var w00 = (1 - fx) * (1 - fy);
-        var w10 = fx * (1 - fy);
-        var w01 = (1 - fx) * fy;
-        var w11 = fx * fy;
         var v = verts[j * rn + i];
-        var mx =
-          (ux[a] * w00 +
-            ux[a + 1] * w10 +
-            ux[row1 + i0] * w01 +
-            ux[row1 + i0 + 1] * w11) *
-          scale;
-        var my =
-          (uy[a] * w00 +
-            uy[a + 1] * w10 +
-            uy[row1 + i0] * w01 +
-            uy[row1 + i0 + 1] * w11) *
-          scale;
-        var hw = headWeight(v.ox, v.oy);
-        var turn = hw * neckLever(v.oy);
+        var mx = sampleGrid(spring, ux, v.ox, v.oy) * scale;
+        var my = sampleGrid(spring, uy, v.ox, v.oy) * scale;
+        // Person weight, not the head ellipse, so hair and shoulders move.
+        var hw = useMatte
+          ? sampleGrid(spring, weight, v.ox, v.oy)
+          : headWeight(v.ox, v.oy);
+        var turn = hw * bodyLever(spring, v.oy);
         v.x = v.ox + mx * hw + (spring.shiftX || 0) * turn;
         v.y = v.oy + my * hw + (spring.shiftY || 0) * turn;
       }
@@ -874,9 +1060,11 @@
     return { p: target + off.p, v: off.v };
   }
 
-  // Rigid lean of the whole head. While grabbed it follows the pull without
+  // Rigid lean of the person. While grabbed it follows the pull without
   // overshooting the aim. On release it uses the skin's overshoot rule.
   // Reduced motion is critically damped and stays on the home side of the aim.
+  // The hinge is the bottom of the person once a matte is bound, so the head
+  // moves more than the shoulders and the shoulders still move.
   function stepHeadShift(spring, dt) {
     var targetX = 0;
     var targetY = 0;
@@ -973,8 +1161,11 @@
 
     stepHeadShift(spring, elapsed);
     if (grabbing && grip > 0) {
-      var grabW = headWeight(spring.grabX, spring.grabY);
-      var grabTurn = grabW * neckLever(spring.grabY);
+      var grabW =
+        spring.hasMatte && spring.weight
+          ? sampleGrid(spring, spring.weight, spring.grabX, spring.grabY)
+          : headWeight(spring.grabX, spring.grabY);
+      var grabTurn = grabW * bodyLever(spring, spring.grabY);
       var cellPx = PLATE / cells;
       toX -= ((spring.shiftX || 0) * grabTurn) / cellPx;
       toY -= ((spring.shiftY || 0) * grabTurn) / cellPx;
@@ -1722,6 +1913,15 @@
         last = t;
         self._engine.tick(t);
         self._engine.pointerStopCheck(t);
+        if (
+          self._spring &&
+          self._images &&
+          self._images.matte &&
+          self._spring._pinnedMatte !== self._images.matte
+        ) {
+          bindSpringMatte(self._spring, self._images.matte);
+          self._spring._pinnedMatte = self._images.matte;
+        }
         stepMesh(self._spring, self._engine, dtMs);
         var disp = self._engine.getDisplay();
         if (self._renderer) {
@@ -1778,6 +1978,7 @@
     createFetchGuard: createFetchGuard,
     selectRenderPath: selectRenderPath,
     makeSpringState: makeSpringState,
+    bindSpringMatte: bindSpringMatte,
     springUsesOvershoot: function (state) {
       return state.overshoot && state.home && !state.reduced;
     },

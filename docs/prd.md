@@ -81,7 +81,7 @@ While the pointer is down and the pull passes 0.09 of the photo width:
 - The grabbed point of the skin stays under the pointer.
 - Surrounding skin follows, less and less with distance, so a long pull becomes a taper.
 - Travel past about 0.6 of the photo width compresses, the way a rubber band does. The skin does not follow the pointer forever.
-- The whole head leans a small amount toward the pull, pivoting near the base of the neck.
+- The person leans a small amount toward the pull, pivoting toward the bottom of the body, so the head moves more than the shoulders.
 - The expression crossfades to **bracing pain** in about 80 ms and holds for the rest of the drag. Dropping back under 0.09 during the same grab returns to curious, also in about 80 ms.
 
 Pain is one plate: eyes squeezed, brows down, mouth braced. It brings its own eyes. The gaze sheet stays off for the whole grab.
@@ -134,7 +134,7 @@ A 3×3 grid is too coarse. Across a hero section the eyes would pop from corner 
 
 Gaze cells and blinks are stored as a sprite sheet of eye patches. The widget draws them over the smile’s eye rectangles, and only while the smile is the face on screen. Every patch is the smile everywhere except the eyes themselves, so swapping a cell moves nothing but the eyes. The rest of the smile never changes between looks.
 
-The widget never draws a raw Magic Hour image. It draws the locked plates. A plate that shifted, rescaled, or redrew the hair cannot be stretched on the same mesh as the smile: the nose would swim under the pointer, and the eye patches would miss the sockets. The canvas is a white field. The photograph is shown where the person matte is set: hair, head, shoulders, and clothes. The original background is not drawn. The matte is a public bundle file, `matte.webp`, made from the smile. The CDN plate files are still the full photo. The spring still moves only the head.
+The widget never draws a raw Magic Hour image. It draws the locked plates. A plate that shifted, rescaled, or redrew the hair cannot be stretched on the same mesh as the smile: the nose would swim under the pointer, and the eye patches would miss the sockets. The canvas is a white field. The photograph is shown where the person matte is set: hair, head, shoulders, and clothes. The original background is not drawn. The matte is a public bundle file, `matte.webp`, made from the smile. The CDN plate files are still the full photo. The spring moves the person: head, hair, and shoulders. The background stays still.
 
 Pain and nausea do not get a gaze grid. Their eyes are part of the joke, and tracking through a grimace or a cross-eye would fight it.
 
