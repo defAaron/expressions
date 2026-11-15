@@ -352,6 +352,66 @@ describe("face.js mesh displacement", () => {
     expect(Number.isFinite(held.x + across.x + far.x)).toBe(true);
   });
 
+  it("keeps the background and the frame still while the head is pulled and released", () => {
+    const api = loadFaceApi();
+    const spring = api.makeSpringState(false);
+    const grab = { x: 420, y: 520 };
+    const pointer = { x: grab.x + api.PLATE * 0.18, y: grab.y };
+    let grabbing = true;
+    const engine = {
+      isGrabbing: () => grabbing,
+      _grabPlateX: grab.x,
+      _grabPlateY: grab.y,
+      getPointer: () => ({
+        x: pointer.x,
+        y: pointer.y,
+        onFace: true,
+        type: "mouse",
+      }),
+    };
+    for (let i = 0; i < 40; i++) api.stepMesh(spring, engine, 16);
+
+    const still = (x: number, y: number) => {
+      const v = vertAt(spring, api.PLATE, x, y);
+      expect(Math.hypot(v.x - v.ox, v.y - v.oy)).toBeLessThan(0.5);
+    };
+    still(512, 980);
+    still(0, 0);
+
+    grabbing = false;
+    for (let i = 0; i < 24; i++) {
+      api.stepMesh(spring, engine, 16);
+      still(512, 980);
+      still(0, 0);
+    }
+  });
+
+  it("shifts the opposite side of the head a little in the direction of a cheek tug", () => {
+    const api = loadFaceApi();
+    const spring = api.makeSpringState(false);
+    const grab = { x: 360, y: 500 };
+    const pointer = { x: grab.x + api.PLATE * 0.18, y: grab.y };
+    const engine = {
+      isGrabbing: () => true,
+      _grabPlateX: grab.x,
+      _grabPlateY: grab.y,
+      getPointer: () => ({
+        x: pointer.x,
+        y: pointer.y,
+        onFace: true,
+        type: "mouse",
+      }),
+    };
+    for (let i = 0; i < 40; i++) api.stepMesh(spring, engine, 16);
+
+    const held = vertAt(spring, api.PLATE, grab.x, grab.y);
+    const opposite = vertAt(spring, api.PLATE, 680, 500);
+    const heldDisp = held.x - held.ox;
+    const oppDisp = opposite.x - opposite.ox;
+    expect(oppDisp).toBeGreaterThan(8);
+    expect(oppDisp).toBeLessThan(heldDisp);
+  });
+
   it("grows slower once travel passes 0.6 of the plate width", () => {
     const api = loadFaceApi();
     const w = api.PLATE;

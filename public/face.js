@@ -30,15 +30,30 @@
   var COARSE = 32;
   var PAD_FRAC = 0.3;
   var RUBBER_KNEE = 0.6;
-  var LEAN_PX = 6;
+  // Canonical crop: the head is the middle of the plate. No face detection.
+  // Ellipse covers hair, ears, and chin. The neck is the base of that ellipse.
+  var HEAD_CX = 512;
+  var HEAD_CY = 480;
+  var HEAD_RX = 320;
+  var HEAD_RY = 360;
+  var NECK_Y = 800;
+  var HEAD_FALLOFF = 0.08;
+  // Crown-level shift along the rubber-banded pull. Half the pull, and never
+  // more than about 0.08 of the plate, so a long drag cannot walk the skull
+  // off the frame. The neck lever scales this down toward the chin.
+  var HEAD_SHIFT_GAIN = 0.5;
+  var HEAD_SHIFT_CAP = 0.08;
   // Soft sheet. A grab is a brush on the already-deformed picture; the rest
-  // of the face is a damped membrane, so a pull travels through the features
-  // instead of stopping at a circle.
+  // of the head is a damped membrane, so a pull travels through the features
+  // instead of stopping at a circle. Nodes outside the head stay pinned.
   // ü = c²∇²u − ω²u − γu̇ + ν∇²u̇
-  var SHEET_HZ = 2.3;
-  var SHEET_REACH = 0.085;
-  var SHEET_DAMP = 0.14;
-  var SHEET_FLESH = 0.35;
+  // Overall-shape fluidity is reach and flesh (how far and how viscously the
+  // silhouette flows) against hz and damp (how fast it returns, how little it
+  // sloshes). These four are 15% less fluid than the previous tune.
+  var SHEET_HZ = 2.645;
+  var SHEET_REACH = 0.07225;
+  var SHEET_DAMP = 0.161;
+  var SHEET_FLESH = 0.2975;
   var SHEET_HARDEST = 8;
   var SHEET_GRIP = 2500;
   var SHEET_HANDFUL = 0.085;
@@ -415,6 +430,53 @@
     return "img";
   }
 
+  function headOutside(px, py) {
+    if (py >= NECK_Y) return true;
+    var nx = (px - HEAD_CX) / HEAD_RX;
+    var ny = (py - HEAD_CY) / HEAD_RY;
+    return nx * nx + ny * ny >= 1;
+  }
+
+  // Distance in plate pixels to the nearer of the ellipse edge and the neck.
+  // Zero outside the head. Used to fade motion so the head does not tear.
+  function headGap(px, py) {
+    if (py >= NECK_Y) return 0;
+    var dx = px - HEAD_CX;
+    var dy = py - HEAD_CY;
+    var er = Math.hypot(dx / HEAD_RX, dy / HEAD_RY);
+    if (!(er < 1)) return 0;
+    var dist = Math.hypot(dx, dy);
+    var along = er > 1e-4 ? (dist * (1 - er)) / er : Math.min(HEAD_RX, HEAD_RY);
+    var neck = NECK_Y - py;
+    return along < neck ? along : neck;
+  }
+
+  function headWeight(px, py) {
+    var gap = headGap(px, py);
+    var band = HEAD_FALLOFF * PLATE;
+    if (gap >= band) return 1;
+    if (!(gap > 0)) return 0;
+    var u = gap / band;
+    return u * u * (3 - 2 * u);
+  }
+
+  // 0 at the neck, 1 at the crown, so a tug pivots about the base of the neck.
+  function neckLever(py) {
+    var span = NECK_Y - (HEAD_CY - HEAD_RY);
+    if (!(span > 0)) return 0;
+    var t = (NECK_Y - py) / span;
+    if (t < 0) return 0;
+    if (t > 1) return 1;
+    return t;
+  }
+
+  function headShiftAim(pullX, pullY) {
+    var mag = Math.hypot(pullX || 0, pullY || 0);
+    if (!(mag > 0.001)) return { x: 0, y: 0 };
+    var amp = Math.min(HEAD_SHIFT_CAP * PLATE, HEAD_SHIFT_GAIN * mag);
+    return { x: (pullX / mag) * amp, y: (pullY / mag) * amp };
+  }
+
   function makeSpringState(reduced) {
     var rn = Math.floor(PLATE / GRID) + 1;
     var rc = rn - 1;
@@ -432,7 +494,10 @@
     var fixed = new Uint8Array(count);
     for (var j = 0; j < n; j++) {
       for (var i = 0; i < n; i++) {
-        fixed[j * n + i] = i === 0 || j === 0 || i === cells || j === cells ? 1 : 0;
+        var border = i === 0 || j === 0 || i === cells || j === cells;
+        var px = (i / cells) * PLATE;
+        var py = (j / cells) * PLATE;
+        fixed[j * n + i] = border || headOutside(px, py) ? 1 : 0;
       }
     }
     return {
@@ -453,8 +518,10 @@
       homeStart: 0,
       reduced: reduced,
       overshoot: !reduced,
-      leanX: 0,
-      leanY: 0,
+      shiftX: 0,
+      shiftY: 0,
+      shiftVx: 0,
+      shiftVy: 0,
       handX: 0,
       handY: 0,
       handReady: false,
@@ -694,8 +761,22 @@
         var w01 = (1 - fx) * fy;
         var w11 = fx * fy;
         var v = verts[j * rn + i];
-        v.x = v.ox + (ux[a] * w00 + ux[a + 1] * w10 + ux[row1 + i0] * w01 + ux[row1 + i0 + 1] * w11) * scale;
-        v.y = v.oy + (uy[a] * w00 + uy[a + 1] * w10 + uy[row1 + i0] * w01 + uy[row1 + i0 + 1] * w11) * scale;
+        var mx =
+          (ux[a] * w00 +
+            ux[a + 1] * w10 +
+            ux[row1 + i0] * w01 +
+            ux[row1 + i0 + 1] * w11) *
+          scale;
+        var my =
+          (uy[a] * w00 +
+            uy[a + 1] * w10 +
+            uy[row1 + i0] * w01 +
+            uy[row1 + i0 + 1] * w11) *
+          scale;
+        var hw = headWeight(v.ox, v.oy);
+        var turn = hw * neckLever(v.oy);
+        v.x = v.ox + mx * hw + (spring.shiftX || 0) * turn;
+        v.y = v.oy + my * hw + (spring.shiftY || 0) * turn;
       }
     }
   }
@@ -773,6 +854,61 @@
     }
   }
 
+  function dampShift(p, v, target, dt, wn, zeta) {
+    if (!(dt > 0) || !(wn > 0)) return { p: p, v: v };
+    if (zeta >= 1) {
+      var A = p - target;
+      var B = v + wn * A;
+      var e = Math.exp(-wn * dt);
+      return {
+        p: target + (A + B * dt) * e,
+        v: (B - wn * (A + B * dt)) * e,
+      };
+    }
+    var wd = wn * Math.sqrt(1 - zeta * zeta);
+    var sigma = zeta * wn;
+    var off = springAxis(p - target, v, dt, wd, sigma);
+    return { p: target + off.p, v: off.v };
+  }
+
+  // Rigid lean of the whole head. While grabbed it follows the pull without
+  // overshooting the aim. On release it uses the skin's overshoot rule.
+  // Reduced motion is critically damped and stays on the home side of the aim.
+  function stepHeadShift(spring, dt) {
+    var targetX = 0;
+    var targetY = 0;
+    if (spring.grabbing) {
+      var aim = headShiftAim(spring.pullX, spring.pullY);
+      targetX = aim.x;
+      targetY = aim.y;
+    }
+    var wn = spring.reduced ? 2 * Math.PI * 6 : SPRING_WN;
+    var zeta = spring.reduced || spring.grabbing ? 1 : SPRING_ZETA;
+    var sx = dampShift(spring.shiftX || 0, spring.shiftVx || 0, targetX, dt, wn, zeta);
+    var sy = dampShift(spring.shiftY || 0, spring.shiftVy || 0, targetY, dt, wn, zeta);
+    spring.shiftX = sx.p;
+    spring.shiftY = sy.p;
+    spring.shiftVx = sx.v;
+    spring.shiftVy = sy.v;
+    if (!isFinite(spring.shiftX + spring.shiftY + spring.shiftVx + spring.shiftVy)) {
+      spring.shiftX = 0;
+      spring.shiftY = 0;
+      spring.shiftVx = 0;
+      spring.shiftVy = 0;
+      return;
+    }
+    if (
+      !spring.grabbing &&
+      Math.hypot(spring.shiftX, spring.shiftY) < 0.25 &&
+      Math.hypot(spring.shiftVx, spring.shiftVy) < 2
+    ) {
+      spring.shiftX = 0;
+      spring.shiftY = 0;
+      spring.shiftVx = 0;
+      spring.shiftVy = 0;
+    }
+  }
+
   function stepMesh(spring, engine, dtMs) {
     if (!spring || !engine || !spring.ux) return;
     var elapsed = dtMs > 0 ? dtMs / 1000 : 0.016;
@@ -832,6 +968,17 @@
       }
     }
 
+    stepHeadShift(spring, elapsed);
+    if (grabbing && grip > 0) {
+      var grabW = headWeight(spring.grabX, spring.grabY);
+      var grabTurn = grabW * neckLever(spring.grabY);
+      var cellPx = PLATE / cells;
+      toX -= ((spring.shiftX || 0) * grabTurn) / cellPx;
+      toY -= ((spring.shiftY || 0) * grabTurn) / cellPx;
+      hvx = (toX - spring.handX) / elapsed;
+      hvy = (toY - spring.handY) / elapsed;
+    }
+
     var fromX = spring.handX;
     var fromY = spring.handY;
     sheetSimulate(spring, elapsed, fromX, fromY, toX, toY, hvx, hvy, radius, grip);
@@ -843,27 +990,6 @@
     }
     syncSheet(spring);
     spring._dtMs = dtMs > 0 ? dtMs : 0;
-  }
-
-  function updateLean(spring, dtMs) {
-    if (!spring) return;
-    var targetX = 0;
-    var targetY = 0;
-    if (spring.grabbing) {
-      var px = spring.pullX || 0;
-      var py = spring.pullY || 0;
-      var mag = Math.hypot(px, py);
-      if (mag > 0.001) {
-        var gain = Math.min(1, mag / (PLATE * 0.2));
-        targetX = (px / mag) * LEAN_PX * gain;
-        targetY = (py / mag) * LEAN_PX * gain;
-      }
-    }
-    var k = 1 - Math.exp(-(dtMs > 0 ? dtMs : 0) / 240);
-    var lx = spring.leanX || 0;
-    var ly = spring.leanY || 0;
-    spring.leanX = lx + (targetX - lx) * k;
-    spring.leanY = ly + (targetY - ly) * k;
   }
 
   function plateClipX(px) {
@@ -1131,8 +1257,6 @@
     var fade = createPlateFade();
 
     function writeMesh(spring) {
-      var leanX = spring && spring.leanX ? spring.leanX : 0;
-      var leanY = spring && spring.leanY ? spring.leanY : 0;
       var verts = spring && spring.verts;
       for (var i = 0; i < n * n; i++) {
         var ox;
@@ -1152,10 +1276,9 @@
           px = ox;
           py = oy;
         }
-        var neck = 1 - oy / PLATE;
         var o = i * 4;
-        mesh[o] = plateClipX(px + leanX * neck);
-        mesh[o + 1] = plateClipY(py + leanY * neck);
+        mesh[o] = plateClipX(px);
+        mesh[o + 1] = plateClipY(py);
         mesh[o + 2] = ox / PLATE;
         mesh[o + 3] = oy / PLATE;
       }
@@ -1216,7 +1339,6 @@
         if (!fromBmp && !toBmp) return;
         if (!fromBmp) fromBmp = toBmp;
         if (!toBmp) toBmp = fromBmp;
-        if (spring) updateLean(spring, dtMs != null ? dtMs : spring._dtMs || 0);
         writeMesh(spring);
         upload(tex0, fromBmp, "a");
         upload(tex1, toBmp, "b");

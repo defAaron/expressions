@@ -222,9 +222,9 @@ The gaze sheet is drawn only when the settled face is the smile and the crossfad
 
 Our own renderer. A regular triangle grid over the plate, cell size about 10 source pixels. The membrane is solved on a coarser grid of about 64 cells and sampled onto that mesh. Each frame:
 
-- While grabbed, the skin under the pointer is a handful that moves with the pointer in the already-deformed picture. The handful is about 8.5% of the plate width. Every other node is a point on a damped membrane: neighbors pull on each other, so the stretch and the compression run through the whole face, and a release sends a wave home. The distance a pull spreads past the handful is about 8.5% of the plate width, with a tail that still moves the features.
+- While grabbed, the skin under the pointer is a handful that moves with the pointer in the already-deformed picture. The handful is about 8.5% of the plate width. Every other free node is a point on a damped membrane: neighbors pull on each other. The membrane runs through the head. Nodes outside the head stay pinned, including background, shoulders, and the frame. A release wobbles the head and sends that wave home. It does not wobble the rest of the portrait. The distance a pull spreads past the handful is about 7.2% of the plate width, with a tail that still moves the features.
 - Pointer travel is passed through a rubber band. Past 0.6 of the plate width, extra travel adds little displacement.
-- A slower offset on the whole grid leans the head a few pixels toward the pull.
+- A tug also shifts the whole head a little toward the pull, pivoting at the base of the neck, so the opposite side of the head moves a smaller amount in the same direction. That shift springs home with the head.
 - On release the same membrane returns the face. It may overshoot, then settle. Reduced motion uses critical damping and no overshoot.
 - A grab that begins during the return catches the skin where it is. The outer edge of the plate stays pinned so the portrait does not walk off its frame.
 
