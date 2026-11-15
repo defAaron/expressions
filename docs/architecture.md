@@ -230,7 +230,7 @@ Our own renderer. A regular triangle grid over the plate, cell size about 10 sou
 
 The canvas is larger than the photo by a pad of about 0.3 of the plate width, so a taper can leave the photograph and sit on the page. The stage element is that padded box. The host sizes the stage. The photo stays centered at its own aspect.
 
-Drawing uses one textured mesh in the smile’s UV space. Expression crossfade is a mix of two full-plate textures. Gaze is a second sample from the sheet, written only inside the two rects, and only in the settled smile state. The sample is a 1:1 blit of the cell halves. Curious, pain, and nausea sample their own eye pixels from the plate.
+Drawing uses one textured mesh in the smile’s UV space. The canvas is a white field, and the plate is shown only inside the head, feathered at the edge, so the original background is not drawn. Expression crossfade is a mix of two full-plate textures. Gaze is a second sample from the sheet, written only inside the two rects, and only in the settled smile state. The sample is a 1:1 blit of the cell halves. Curious, pain, and nausea sample their own eye pixels from the plate.
 
 ### Pointer
 

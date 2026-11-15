@@ -89,6 +89,7 @@ type FaceTestApi = {
     dtMs: number,
     reduced: boolean,
   ) => void;
+  headWeight: (px: number, py: number) => number;
   ExpressionsFace: new () => HTMLElement;
 };
 
@@ -437,6 +438,26 @@ describe("face.js mesh displacement", () => {
     );
     expect((held[0].x - held[0].ox) * signX).toBeGreaterThanOrEqual(-1e-6);
     expect((held[0].y - held[0].oy) * signY).toBeGreaterThanOrEqual(-1e-6);
+  });
+});
+
+describe("face.js head matte", () => {
+  it("is 1 at the head center", () => {
+    const api = loadFaceApi();
+    expect(api.headWeight(512, 480)).toBe(1);
+  });
+
+  it("is 0 below the neck and at the frame corner", () => {
+    const api = loadFaceApi();
+    expect(api.headWeight(512, 980)).toBe(0);
+    expect(api.headWeight(0, 0)).toBe(0);
+  });
+
+  it("feathers just inside the ellipse edge", () => {
+    const api = loadFaceApi();
+    const justInside = api.headWeight(512 + 320 - 4, 480);
+    expect(justInside).toBeGreaterThan(0);
+    expect(justInside).toBeLessThan(1);
   });
 });
 

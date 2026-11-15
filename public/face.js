@@ -1180,8 +1180,24 @@
     if (!gl) return null;
     var vs =
       "attribute vec2 a_pos;attribute vec2 a_uv;varying vec2 v_uv;void main(){v_uv=a_uv;gl_Position=vec4(a_pos,0.0,1.0);}";
+    // Same headWeight as the mesh, evaluated per fragment from plate UV
+    // (v_uv is ox/PLATE, oy/PLATE, y down) so the 10px grid does not facet the edge.
     var fsMix =
-      "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex0;uniform sampler2D u_tex1;uniform float u_mix;void main(){vec4 a=texture2D(u_tex0,v_uv);vec4 b=texture2D(u_tex1,v_uv);gl_FragColor=mix(a,b,u_mix);}";
+      "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex0;uniform sampler2D u_tex1;uniform float u_mix;" +
+      "float headW(vec2 uv){" +
+      "float px=uv.x*" + PLATE + ".0;float py=uv.y*" + PLATE + ".0;" +
+      "if(py>=" + NECK_Y + ".0)return 0.0;" +
+      "float dx=px-" + HEAD_CX + ".0;float dy=py-" + HEAD_CY + ".0;" +
+      "float er=length(vec2(dx/" + HEAD_RX + ".0,dy/" + HEAD_RY + ".0));" +
+      "if(!(er<1.0))return 0.0;" +
+      "float dist=length(vec2(dx,dy));" +
+      "float along=er>0.0001?(dist*(1.0-er))/er:min(" + HEAD_RX + ".0," + HEAD_RY + ".0);" +
+      "float neckd=" + NECK_Y + ".0-py;float gap=along<neckd?along:neckd;" +
+      "float band=" + HEAD_FALLOFF + "*" + PLATE + ".0;" +
+      "if(gap>=band)return 1.0;if(!(gap>0.0))return 0.0;" +
+      "float u=gap/band;return u*u*(3.0-2.0*u);}" +
+      "void main(){vec4 photo=mix(texture2D(u_tex0,v_uv),texture2D(u_tex1,v_uv),u_mix);" +
+      "gl_FragColor=mix(vec4(1.0,1.0,1.0,1.0),photo,headW(v_uv));}";
     var fsBlit =
       "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex;void main(){gl_FragColor=texture2D(u_tex,v_uv);}";
 
@@ -1345,7 +1361,7 @@
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.disable(gl.BLEND);
         gl.disable(gl.DEPTH_TEST);
-        gl.clearColor(0, 0, 0, 0);
+        gl.clearColor(1, 1, 1, 1);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.useProgram(prog);
         gl.activeTexture(gl.TEXTURE0);
@@ -1372,6 +1388,11 @@
 
   function create2DRenderer(canvas, ctx, images, manifest) {
     var fade = createPlateFade();
+    var doc = (canvas && canvas.ownerDocument) || global.document;
+    var scratch = doc.createElement("canvas");
+    scratch.width = canvas.width;
+    scratch.height = canvas.height;
+    var sctx = scratch.getContext("2d");
 
     function vertexAt(spring, plateX, plateY) {
       var verts = spring.verts;
@@ -1385,10 +1406,17 @@
       return verts[gy * n + gx];
     }
 
-    function drawSlices(bmp, spring, photo) {
+    function sliceOffset(spring, x, y, pw, ph) {
+      if (!spring || !spring.verts) return { dx: 0, dy: 0 };
+      var v = vertexAt(spring, x + pw / 2, y + ph / 2);
+      if (!v) return { dx: 0, dy: 0 };
+      return { dx: v.x - v.ox, dy: v.y - v.oy };
+    }
+
+    function drawSlices(context, bmp, spring, photo) {
       if (!bmp) return;
       if (!spring || !spring.verts) {
-        ctx.drawImage(bmp, photo.x, photo.y, photo.w, photo.h);
+        context.drawImage(bmp, photo.x, photo.y, photo.w, photo.h);
         return;
       }
       var bw = bmp.width || PLATE;
@@ -1397,22 +1425,61 @@
         for (var x = 0; x < PLATE; x += COARSE) {
           var pw = Math.min(COARSE, PLATE - x);
           var ph = Math.min(COARSE, PLATE - y);
-          var v = vertexAt(spring, x + pw / 2, y + ph / 2);
-          var dx = v ? v.x - v.ox : 0;
-          var dy = v ? v.y - v.oy : 0;
-          ctx.drawImage(
+          var off = sliceOffset(spring, x, y, pw, ph);
+          context.drawImage(
             bmp,
             (x / PLATE) * bw,
             (y / PLATE) * bh,
             (pw / PLATE) * bw,
             (ph / PLATE) * bh,
-            photo.x + photo.w * ((x + dx) / PLATE),
-            photo.y + photo.h * ((y + dy) / PLATE),
+            photo.x + photo.w * ((x + off.dx) / PLATE),
+            photo.y + photo.h * ((y + off.dy) / PLATE),
             photo.w * (pw / PLATE),
             photo.h * (ph / PLATE),
           );
         }
       }
+    }
+
+    function paintMixed(sample, spring, photo) {
+      var fromBmp = images[sample.from] || images.smile;
+      var toBmp = images[sample.to] || images.smile || fromBmp;
+      sctx.setTransform(1, 0, 0, 1, 0, 0);
+      sctx.globalAlpha = 1;
+      sctx.clearRect(0, 0, scratch.width, scratch.height);
+      if (sample.mix >= 1 || sample.mix <= 0) {
+        drawSlices(sctx, sample.mix <= 0 ? fromBmp : toBmp, spring, photo);
+        return;
+      }
+      drawSlices(sctx, fromBmp, spring, photo);
+      sctx.save();
+      sctx.globalAlpha = sample.mix;
+      drawSlices(sctx, toBmp, spring, photo);
+      sctx.restore();
+    }
+
+    // headWeight at the slice center. Outside the head stays the white field.
+    // The band is one coarse cell, which is as fine as this fallback can blend.
+    function blitHead(spring, photo) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      for (var y = 0; y < PLATE; y += COARSE) {
+        for (var x = 0; x < PLATE; x += COARSE) {
+          var pw = Math.min(COARSE, PLATE - x);
+          var ph = Math.min(COARSE, PLATE - y);
+          var hw = headWeight(x + pw / 2, y + ph / 2);
+          if (!(hw > 0)) continue;
+          var off = sliceOffset(spring, x, y, pw, ph);
+          var dx0 = photo.x + photo.w * ((x + off.dx) / PLATE);
+          var dy0 = photo.y + photo.h * ((y + off.dy) / PLATE);
+          var dw = photo.w * (pw / PLATE);
+          var dh = photo.h * (ph / PLATE);
+          ctx.globalAlpha = hw;
+          ctx.drawImage(scratch, dx0, dy0, dw, dh, dx0, dy0, dw, dh);
+        }
+      }
+      ctx.globalAlpha = 1;
     }
 
     function drawGaze(engine, photo, now) {
@@ -1441,19 +1508,21 @@
       kind: "2d",
       draw: function (plateKey, engine, spring, now) {
         var photo = photoRect(canvas.width, canvas.height);
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (
+          scratch.width !== canvas.width ||
+          scratch.height !== canvas.height
+        ) {
+          scratch.width = canvas.width;
+          scratch.height = canvas.height;
+        }
         var sample = fade.sample(plateKey, engine, now || 0);
-        var fromBmp = images[sample.from] || images.smile;
-        var toBmp = images[sample.to] || images.smile || fromBmp;
-        if (sample.mix >= 1 || sample.mix <= 0) {
-          drawSlices(sample.mix <= 0 ? fromBmp : toBmp, spring, photo);
+        if (sctx) {
+          paintMixed(sample, spring, photo);
+          blitHead(spring, photo);
         } else {
-          ctx.save();
-          ctx.globalAlpha = 1 - sample.mix;
-          drawSlices(fromBmp, spring, photo);
-          ctx.globalAlpha = sample.mix;
-          drawSlices(toBmp, spring, photo);
-          ctx.restore();
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
         if (engine && gazeReady(engine, sample)) drawGaze(engine, photo, now);
       },
@@ -1644,6 +1713,7 @@
     springStep: springStep,
     stepMesh: stepMesh,
     resolveUrl: resolveUrl,
+    headWeight: headWeight,
     ExpressionsFace: ExpressionsFace,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);
