@@ -31,6 +31,7 @@ export type Manifest = {
     half: typeof GAZE_HALF;
     shut: typeof GAZE_SHUT;
   };
+  matte?: string;
 };
 
 function fail(field: string): never {
@@ -143,12 +144,18 @@ export function parseManifest(value: unknown): Manifest {
     fail("plates.smile");
   }
 
+  let matte: string | undefined;
+  if (value.matte !== undefined) {
+    matte = requireNonEmptyString(value.matte, "matte");
+  }
+
   return {
     version: 1,
     size: [MANIFEST_SIZE, MANIFEST_SIZE],
     alt,
     eyes: { left, right, between },
     plates,
+    ...(matte !== undefined ? { matte } : {}),
     gaze: {
       sheet: gazeSheet,
       cols: 5,

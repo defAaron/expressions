@@ -47,7 +47,7 @@ type FaceTestApi = {
     },
   ) => Engine;
   collectFetchUrls: (
-    manifest: typeof MANIFEST,
+    manifest: typeof MANIFEST & { matte?: string },
     manifestUrl: string,
   ) => string[];
   allowedOrigins: (urls: string[]) => Record<string, boolean>;
@@ -483,6 +483,17 @@ describe("face.js render path", () => {
       },
     };
     expect(api.selectRenderPath(canvas)).toBe("img");
+  });
+});
+
+describe("face.js fetch urls", () => {
+  it("includes the matte url when the manifest has one", () => {
+    const api = loadFaceApi();
+    const urls = api.collectFetchUrls(
+      { ...MANIFEST, matte: "matte.webp" },
+      MANIFEST_URL,
+    );
+    expect(urls).toContain("https://cdn.example.com/faces/abc/matte.webp");
   });
 });
 

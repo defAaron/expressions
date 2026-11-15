@@ -134,7 +134,7 @@ A 3×3 grid is too coarse. Across a hero section the eyes would pop from corner 
 
 Gaze cells and blinks are stored as a sprite sheet of eye patches. The widget draws them over the smile’s eye rectangles, and only while the smile is the face on screen. Every patch is the smile everywhere except the eyes themselves, so swapping a cell moves nothing but the eyes. The rest of the smile never changes between looks.
 
-The widget never draws a raw Magic Hour image. It draws the locked plates. A plate that shifted, rescaled, or redrew the hair cannot be stretched on the same mesh as the smile: the nose would swim under the pointer, and the eye patches would miss the sockets. The canvas paints the head on a plain white field and does not show the photograph outside the head; the file on the CDN is still the full photo.
+The widget never draws a raw Magic Hour image. It draws the locked plates. A plate that shifted, rescaled, or redrew the hair cannot be stretched on the same mesh as the smile: the nose would swim under the pointer, and the eye patches would miss the sockets. The canvas is a white field. The photograph is shown where the person matte is set: hair, head, shoulders, and clothes. The original background is not drawn. The matte is a public bundle file, `matte.webp`, made from the smile. The CDN plate files are still the full photo. The spring still moves only the head.
 
 Pain and nausea do not get a gaze grid. Their eyes are part of the joke, and tracking through a grimace or a cross-eye would fight it.
 

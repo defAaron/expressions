@@ -113,4 +113,19 @@ describe("parseManifest", () => {
     const parsed = parseManifest(emptyPlates);
     expect(parsed.plates).toEqual({});
   });
+
+  it("accepts a missing matte", () => {
+    const parsed = parseManifest(validManifest);
+    expect(parsed.matte).toBeUndefined();
+  });
+
+  it("accepts matte.webp", () => {
+    expect(parseManifest(manifestWith({ matte: "matte.webp" })).matte).toBe(
+      "matte.webp",
+    );
+  });
+
+  it("rejects an empty matte", () => {
+    expect(() => parseManifest(manifestWith({ matte: "" }))).toThrow("matte");
+  });
 });

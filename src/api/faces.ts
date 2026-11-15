@@ -1,10 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import type { Manifest } from "../contract/manifest";
 import { createMediaPipeDetector, cropToSmile } from "../locker/crop";
+import { encodePersonMatteWebp, personMatte } from "../locker/matte";
 import type { SmileLandmarks } from "../locker/types";
 import { createMagicHourClient } from "../magic-hour/client";
 import { createLiveMagicHourClient } from "../magic-hour/live";
@@ -131,8 +132,23 @@ function notFound(): Response {
   return json({ error: "not_found" }, 404);
 }
 
+function matteOnDisk(faceId: string): boolean {
+  try {
+    return existsSync(path.join(process.cwd(), bundlePath(faceId, "matte.webp")));
+  } catch {
+    return false;
+  }
+}
+
+function matteFailureMessage(error: unknown): string {
+  if (!(error instanceof Error)) return "matte failed";
+  const message = error.message.replace(/\s+/g, " ").slice(0, 200);
+  if (message.length === 0 || message.includes("MAGIC_HOUR")) return "matte failed";
+  return message;
+}
+
 function defaultManifestSkeleton(faceId: string): Manifest {
-  return {
+  const manifest: Manifest = {
     version: 1,
     size: [1024, 1024],
     alt: "face",
@@ -155,6 +171,8 @@ function defaultManifestSkeleton(faceId: string): Manifest {
       shut: 26,
     },
   };
+  if (matteOnDisk(faceId)) manifest.matte = "matte.webp";
+  return manifest;
 }
 
 export function createInMemoryFaceStore(): FaceStore {
@@ -380,6 +398,9 @@ function publishLocalBundles(inner: FaceStore): FaceStore {
       if (manifest && typeof manifest === "object") {
         const stamped = manifest as Manifest;
         await stampEyes(faceId, stamped);
+        if (matteOnDisk(faceId) && !stamped.matte) {
+          stamped.matte = "matte.webp";
+        }
         const version = Date.now();
         const bust = (file: string) => `${file.split("?")[0]}?v=${version}`;
         for (const plate of ["smile", "curious", "pain", "nausea"] as const) {
@@ -387,6 +408,7 @@ function publishLocalBundles(inner: FaceStore): FaceStore {
           if (file) stamped.plates[plate] = bust(file);
         }
         stamped.gaze.sheet = bust(stamped.gaze.sheet);
+        if (stamped.matte) stamped.matte = bust(stamped.matte);
         const file = path.join(process.cwd(), bundlePath(faceId, "manifest.json"));
         await mkdir(path.dirname(file), { recursive: true });
         await writeFile(file, JSON.stringify(stamped));
@@ -461,6 +483,17 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
         })
           .webp()
           .toFile(smileAbs);
+        try {
+          const matte = await personMatte(cropped.image);
+          const encoded = await encodePersonMatteWebp(
+            matte,
+            cropped.image.width,
+            cropped.image.height,
+          );
+          await writeFile(path.join(process.cwd(), bundlePath(faceId, "matte.webp")), encoded);
+        } catch (error) {
+          console.error(`[expressions] matte ${faceId} ${matteFailureMessage(error)}`);
+        }
         const sourceRel = sourcePath(faceId);
         const sourceAbs = path.join(process.cwd(), sourceRel);
         await mkdir(path.dirname(sourceAbs), { recursive: true });

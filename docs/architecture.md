@@ -152,6 +152,7 @@ A bundle is a directory of public files plus a manifest. The manifest is the onl
     "pain": "pain.webp",
     "nausea": "nausea.webp"
   },
+  "matte": "matte.webp",
   "gaze": {
     "sheet": "gaze.webp",
     "cols": 5,
@@ -167,6 +168,8 @@ A bundle is a directory of public files plus a manifest. The manifest is the onl
 ```
 
 Eye rects, the pupil point, and the cell size are pixels on the 1024 plate. `cellWidth` is `left[2] + right[2]`. `cellHeight` is the shared rect height. The widget copies each half of a cell back onto its rect with no scale.
+
+`matte` may be omitted. When it is present it names `matte.webp`, a person mask made from the smile and used only for drawing. The plate files stay the full photo, including the pixels sent to Magic Hour. Old manifests with no matte still parse.
 
 `gaze.webp` is one horizontal strip of 27 cells. Cells 0–24 are the 5×5 grid. Cell 12 is cut from the smile. Cells 25 and 26 are half-blink and shut. One texture bind covers every look and both blinks.
 
@@ -230,7 +233,7 @@ Our own renderer. A regular triangle grid over the plate, cell size about 10 sou
 
 The canvas is larger than the photo by a pad of about 0.3 of the plate width, so a taper can leave the photograph and sit on the page. The stage element is that padded box. The host sizes the stage. The photo stays centered at its own aspect.
 
-Drawing uses one textured mesh in the smile’s UV space. The canvas is a white field, and the plate is shown only inside the head, feathered at the edge, so the original background is not drawn. Expression crossfade is a mix of two full-plate textures. Gaze is a second sample from the sheet, written only inside the two rects, and only in the settled smile state. The sample is a 1:1 blit of the cell halves. Curious, pain, and nausea sample their own eye pixels from the plate.
+Drawing uses one textured mesh in the smile’s UV space. The canvas is a white field. The photograph is shown where the person matte is set: hair, head, shoulders, and clothes. The original background is not drawn. The matte is a public bundle file, `matte.webp`, made from the smile. The CDN plate files are still the full photo. The spring still moves only the head. Expression crossfade is a mix of two full-plate textures. Gaze is a second sample from the sheet, written only inside the two rects, and only in the settled smile state. The sample is a 1:1 blit of the cell halves. Curious, pain, and nausea sample their own eye pixels from the plate.
 
 ### Pointer
 
@@ -242,7 +245,7 @@ Drawing uses one textured mesh in the smile’s UV space. The canvas is a white 
 
 ### 2D fallback
 
-If `getContext("webgl")` fails and `getContext("2d")` works, draw the plate into a canvas and apply a simpler displacement to a coarse grid with `drawImage` slices. Expression swaps still run. Gaze still swaps by drawing the eye patches. The head lean can be skipped. If neither context works, the smile `img` stays.
+If `getContext("webgl")` fails and `getContext("2d")` works, draw the plate into a canvas and apply a simpler displacement to a coarse grid with `drawImage` slices. The person matte shows the photograph on the white field the same way as WebGL. With no matte, the whole plate is drawn. Expression swaps still run. Gaze still swaps by drawing the eye patches. The head lean can be skipped. If neither context works, the smile `img` stays.
 
 ## App API
 

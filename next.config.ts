@@ -4,6 +4,7 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/api/faces": [
       "./models/face_landmarker.task",
+      "./models/selfie_segmenter.tflite",
       "./node_modules/@mediapipe/tasks-vision/package.json",
       "./node_modules/@mediapipe/tasks-vision/wasm/**/*",
       "./node_modules/gl/**/*",

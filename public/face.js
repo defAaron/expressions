@@ -107,6 +107,9 @@
     if (manifest.gaze && manifest.gaze.sheet) {
       urls.push(resolveUrl(manifest.gaze.sheet, base));
     }
+    if (manifest.matte) {
+      urls.push(resolveUrl(manifest.matte, base));
+    }
     return urls;
   }
 
@@ -1167,10 +1170,26 @@
           return null;
         });
     }
+    var matteP = Promise.resolve(null);
+    if (manifest.matte) {
+      matteP = fetchFn(resolveUrl(manifest.matte, manifestUrl))
+        .then(function (r) {
+          return r.blob();
+        })
+        .then(function (b) {
+          return createImageBitmap(b);
+        })
+        .catch(function () {
+          return null;
+        });
+    }
     return Promise.all(pending).then(function () {
       return gazeP.then(function (sheet) {
         out.gazeSheet = sheet;
-        return out;
+        return matteP.then(function (matte) {
+          out.matte = matte;
+          return out;
+        });
       });
     });
   }
@@ -1180,24 +1199,13 @@
     if (!gl) return null;
     var vs =
       "attribute vec2 a_pos;attribute vec2 a_uv;varying vec2 v_uv;void main(){v_uv=a_uv;gl_Position=vec4(a_pos,0.0,1.0);}";
-    // Same headWeight as the mesh, evaluated per fragment from plate UV
-    // (v_uv is ox/PLATE, oy/PLATE, y down) so the 10px grid does not facet the edge.
+    // v_uv is ox/PLATE, oy/PLATE, y down: the same UV as the photo.
+    // Person luminance shows the photo. Background luminance shows white.
     var fsMix =
-      "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex0;uniform sampler2D u_tex1;uniform float u_mix;" +
-      "float headW(vec2 uv){" +
-      "float px=uv.x*" + PLATE + ".0;float py=uv.y*" + PLATE + ".0;" +
-      "if(py>=" + NECK_Y + ".0)return 0.0;" +
-      "float dx=px-" + HEAD_CX + ".0;float dy=py-" + HEAD_CY + ".0;" +
-      "float er=length(vec2(dx/" + HEAD_RX + ".0,dy/" + HEAD_RY + ".0));" +
-      "if(!(er<1.0))return 0.0;" +
-      "float dist=length(vec2(dx,dy));" +
-      "float along=er>0.0001?(dist*(1.0-er))/er:min(" + HEAD_RX + ".0," + HEAD_RY + ".0);" +
-      "float neckd=" + NECK_Y + ".0-py;float gap=along<neckd?along:neckd;" +
-      "float band=" + HEAD_FALLOFF + "*" + PLATE + ".0;" +
-      "if(gap>=band)return 1.0;if(!(gap>0.0))return 0.0;" +
-      "float u=gap/band;return u*u*(3.0-2.0*u);}" +
+      "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex0;uniform sampler2D u_tex1;uniform sampler2D u_matte;uniform float u_mix;" +
       "void main(){vec4 photo=mix(texture2D(u_tex0,v_uv),texture2D(u_tex1,v_uv),u_mix);" +
-      "gl_FragColor=mix(vec4(1.0,1.0,1.0,1.0),photo,headW(v_uv));}";
+      "float person=texture2D(u_matte,v_uv).r;" +
+      "gl_FragColor=mix(vec4(1.0,1.0,1.0,1.0),photo,person);}";
     var fsBlit =
       "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex;void main(){gl_FragColor=texture2D(u_tex,v_uv);}";
 
@@ -1223,6 +1231,7 @@
 
     var uTex0 = gl.getUniformLocation(prog, "u_tex0");
     var uTex1 = gl.getUniformLocation(prog, "u_tex1");
+    var uMatte = gl.getUniformLocation(prog, "u_matte");
     var uMix = gl.getUniformLocation(prog, "u_mix");
     var uBlit = gl.getUniformLocation(blitProg, "u_tex");
 
@@ -1237,8 +1246,36 @@
     }
     var tex0 = makeTex();
     var tex1 = makeTex();
+    var texMatte = makeTex();
     var texGaze = makeTex();
     var uploaded = { a: null, b: null, g: null };
+    var WHITE_MATTE = {};
+    var uploadedMatte = null;
+
+    function uploadMatte(bitmap) {
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, texMatte);
+      if (bitmap) {
+        if (uploadedMatte === bitmap) return;
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+        uploadedMatte = bitmap;
+        return;
+      }
+      if (uploadedMatte === WHITE_MATTE) return;
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        1,
+        1,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        new Uint8Array([255, 255, 255, 255]),
+      );
+      uploadedMatte = WHITE_MATTE;
+    }
 
     function upload(tex, bitmap, slot) {
       if (!bitmap || uploaded[slot] === bitmap) return;
@@ -1370,6 +1407,8 @@
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, tex1);
         gl.uniform1i(uTex1, 1);
+        uploadMatte(images.matte);
+        gl.uniform1i(uMatte, 2);
         gl.uniform1f(uMix, sample.mix);
         gl.bindBuffer(gl.ARRAY_BUFFER, meshBuf);
         bindAttribs();
@@ -1458,24 +1497,57 @@
       sctx.restore();
     }
 
-    // headWeight at the slice center. Outside the head stays the white field.
-    // The band is one coarse cell, which is as fine as this fallback can blend.
-    function blitHead(spring, photo) {
+    var mattePixels = null;
+
+    function readMatte() {
+      if (mattePixels) return mattePixels;
+      var bmp = images.matte;
+      if (!bmp || !doc || !doc.createElement) return null;
+      var sample = doc.createElement("canvas");
+      var w = bmp.width || PLATE;
+      var h = bmp.height || PLATE;
+      sample.width = w;
+      sample.height = h;
+      var g = sample.getContext("2d");
+      if (!g) return null;
+      g.drawImage(bmp, 0, 0, w, h);
+      mattePixels = g.getImageData(0, 0, w, h);
+      return mattePixels;
+    }
+
+    // Person luminance at the source plate pixel. Feather is the matte, not the head ellipse.
+    function matteAlpha(px, py) {
+      var data = readMatte();
+      if (!data) return 1;
+      var x = Math.floor((px / PLATE) * data.width);
+      var y = Math.floor((py / PLATE) * data.height);
+      if (x < 0) x = 0;
+      if (y < 0) y = 0;
+      if (x > data.width - 1) x = data.width - 1;
+      if (y > data.height - 1) y = data.height - 1;
+      return data.data[(y * data.width + x) * 4] / 255;
+    }
+
+    function blitPlate(spring, photo) {
       ctx.globalAlpha = 1;
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (!images.matte || !readMatte()) {
+        ctx.drawImage(scratch, 0, 0);
+        return;
+      }
       for (var y = 0; y < PLATE; y += COARSE) {
         for (var x = 0; x < PLATE; x += COARSE) {
           var pw = Math.min(COARSE, PLATE - x);
           var ph = Math.min(COARSE, PLATE - y);
-          var hw = headWeight(x + pw / 2, y + ph / 2);
-          if (!(hw > 0)) continue;
+          var person = matteAlpha(x + pw / 2, y + ph / 2);
+          if (!(person > 0)) continue;
           var off = sliceOffset(spring, x, y, pw, ph);
           var dx0 = photo.x + photo.w * ((x + off.dx) / PLATE);
           var dy0 = photo.y + photo.h * ((y + off.dy) / PLATE);
           var dw = photo.w * (pw / PLATE);
           var dh = photo.h * (ph / PLATE);
-          ctx.globalAlpha = hw;
+          ctx.globalAlpha = person;
           ctx.drawImage(scratch, dx0, dy0, dw, dh, dx0, dy0, dw, dh);
         }
       }
@@ -1518,7 +1590,7 @@
         var sample = fade.sample(plateKey, engine, now || 0);
         if (sctx) {
           paintMixed(sample, spring, photo);
-          blitHead(spring, photo);
+          blitPlate(spring, photo);
         } else {
           ctx.globalAlpha = 1;
           ctx.fillStyle = "#ffffff";
