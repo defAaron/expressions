@@ -209,8 +209,8 @@ Four releases with pull ≥ 0.05 inside 9 seconds take the nausea branch and hol
 
 | State | Plate | Fade | Eyes | Skin |
 | --- | --- | --- | --- | --- |
-| Smile | smile | 260 ms back from another face | Gaze sheet. 60 ms cuts. Blink every 2.4–6.2 s. Forward look when the pointer is within 0.24 widths of the eyes, and 250–450 ms after the pointer stops. | At rest. A hovering cursor catches the skin lightly and the skin slips free. |
-| Curious | curious | 160 ms on hover, 80 ms while grabbed, 140 ms on a tap | The plate’s own eyes. Sheet weight goes to zero. | Hover rub, or a grab whose pull is still ≤ 0.09. |
+| Smile | smile | 260 ms back from another face | Gaze sheet. 60 ms cuts. Blink every 2.4–6.2 s. Forward look when the pointer is within 0.24 widths of the eyes, and 250–450 ms after the pointer stops. | At rest. A cursor that is only moving does not pull the skin. |
+| Curious | curious | 160 ms on hover, 80 ms while grabbed, 140 ms on a tap | The plate’s own eyes. Sheet weight goes to zero. | Still, until a grab. A grab whose pull is still ≤ 0.09. |
 | Pain | pain | 80 ms | The plate’s own eyes. | Grabbed point stuck to the pointer, falloff, rubber band, small head lean. |
 | Nausea | nausea | 140 ms | The plate’s own eyes. | Spring toward rest. |
 
@@ -220,13 +220,13 @@ The gaze sheet is drawn only when the settled face is the smile and the crossfad
 
 ### Mesh
 
-Our own renderer. A regular triangle grid over the plate, cell size about 10 source pixels. Each frame:
+Our own renderer. A regular triangle grid over the plate, cell size about 10 source pixels. The membrane is solved on a coarser grid of about 64 cells and sampled onto that mesh. Each frame:
 
-- While grabbed, the vertex nearest the grab point is pinned to the pointer, in plate space. Neighbors are pulled with a smooth falloff. The radius of a grab is about 7% of the plate width.
+- While grabbed, the skin under the pointer is a handful that moves with the pointer in the already-deformed picture. The handful is about 8.5% of the plate width. Every other node is a point on a damped membrane: neighbors pull on each other, so the stretch and the compression run through the whole face, and a release sends a wave home. The distance a pull spreads past the handful is about 8.5% of the plate width, with a tail that still moves the features.
 - Pointer travel is passed through a rubber band. Past 0.6 of the plate width, extra travel adds little displacement.
 - A slower offset on the whole grid leans the head a few pixels toward the pull.
-- On release, each displaced vertex springs home. The spring may overshoot to about 1.15 of the remaining distance on the first bounce, then damps out inside 700 ms. Reduced motion uses a 200 ms ease and no overshoot.
-- A grab that begins during the spring pins whatever position the vertices are in at that moment.
+- On release the same membrane returns the face. It may overshoot, then settle. Reduced motion uses critical damping and no overshoot.
+- A grab that begins during the return catches the skin where it is. The outer edge of the plate stays pinned so the portrait does not walk off its frame.
 
 The canvas is larger than the photo by a pad of about 0.3 of the plate width, so a taper can leave the photograph and sit on the page. The stage element is that padded box. The host sizes the stage. The photo stays centered at its own aspect.
 

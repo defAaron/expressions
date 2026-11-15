@@ -86,7 +86,7 @@ While the pointer is down and the pull passes 0.09 of the photo width:
 
 Pain is one plate: eyes squeezed, brows down, mouth braced. It brings its own eyes. The gaze sheet stays off for the whole grab.
 
-A cursor that is only hovering already catches the skin under it a little. The skin comes along, resists, and slips free. That is not yet a grab, and it does not by itself switch the face to pain.
+A cursor that is only moving does not pull the skin. The face stays still until the pointer goes down. Hovering does not by itself switch the face to pain.
 
 ### Release
 

@@ -60,12 +60,23 @@ type FaceTestApi = {
   makeSpringState: (reduced: boolean) => SpringState;
   springUsesOvershoot: (state: SpringState) => boolean;
   rubberBand: (travel: number, plateWidth: number) => number;
-  grabOffset: (
-    vertex: { x: number; y: number },
-    grabPoint: { x: number; y: number },
-    pointer: { x: number; y: number },
-    plateWidth: number,
-  ) => { x: number; y: number };
+  stepMesh: (
+    spring: {
+      verts: Array<{ ox: number; oy: number; x: number; y: number }>;
+    },
+    engine: {
+      isGrabbing: () => boolean;
+      _grabPlateX?: number;
+      _grabPlateY?: number;
+      getPointer: () => {
+        x: number;
+        y: number;
+        onFace: boolean;
+        type: string;
+      };
+    },
+    dtMs: number,
+  ) => void;
   springStep: (
     vertices: Array<{
       ox: number;
@@ -295,24 +306,50 @@ describe("face.js interaction engine", () => {
 });
 
 describe("face.js mesh displacement", () => {
-  it("moves the vertex on the grab point to the pointer", () => {
-    const api = loadFaceApi();
-    const grab = { x: 480, y: 500 };
-    const pointer = { x: 510, y: 530 };
-    const vertex = { x: grab.x, y: grab.y };
-    const off = api.grabOffset(vertex, grab, pointer, api.PLATE);
-    expect(vertex.x + off.x).toBeCloseTo(pointer.x, 4);
-    expect(vertex.y + off.y).toBeCloseTo(pointer.y, 4);
-  });
+  function vertAt(
+    spring: { verts: Array<{ ox: number; oy: number; x: number; y: number }> },
+    plate: number,
+    x: number,
+    y: number,
+  ) {
+    const n = Math.round(Math.sqrt(spring.verts.length));
+    const cells = n - 1;
+    const i = Math.round((x / plate) * cells);
+    const j = Math.round((y / plate) * cells);
+    return spring.verts[j * n + i];
+  }
 
-  it("leaves a vertex outside the grab radius where it is", () => {
+  it("a held pull stretches the face past the handful, not as a hard circle", () => {
     const api = loadFaceApi();
-    const grab = { x: 480, y: 500 };
-    const pointer = { x: 520, y: 540 };
-    const vertex = { x: grab.x + api.PLATE * 0.2, y: grab.y };
-    expect(api.PLATE * 0.2).toBeGreaterThan(api.PLATE * 0.07);
-    const off = api.grabOffset(vertex, grab, pointer, api.PLATE);
-    expect(off).toEqual({ x: 0, y: 0 });
+    const spring = api.makeSpringState(false);
+    const grab = { x: 420, y: 520 };
+    const pointer = { x: grab.x + api.PLATE * 0.18, y: grab.y };
+    const engine = {
+      isGrabbing: () => true,
+      _grabPlateX: grab.x,
+      _grabPlateY: grab.y,
+      getPointer: () => ({
+        x: pointer.x,
+        y: pointer.y,
+        onFace: true,
+        type: "mouse",
+      }),
+    };
+    for (let i = 0; i < 40; i++) api.stepMesh(spring, engine, 16);
+
+    const held = vertAt(spring, api.PLATE, grab.x, grab.y);
+    const across = vertAt(spring, api.PLATE, grab.x + api.PLATE * 0.16, grab.y);
+    const near = vertAt(spring, api.PLATE, grab.x + api.PLATE * 0.05, grab.y);
+    const far = vertAt(spring, api.PLATE, grab.x + api.PLATE * 0.28, grab.y);
+    const rim = spring.verts[0];
+
+    expect(held.x - held.ox).toBeGreaterThan(api.PLATE * 0.08);
+    expect(Math.hypot(across.x - across.ox, across.y - across.oy)).toBeGreaterThan(8);
+    expect(Math.hypot(near.x - near.ox, near.y - near.oy)).toBeGreaterThan(
+      Math.hypot(far.x - far.ox, far.y - far.oy),
+    );
+    expect(Math.hypot(rim.x - rim.ox, rim.y - rim.oy)).toBeLessThan(0.01);
+    expect(Number.isFinite(held.x + across.x + far.x)).toBe(true);
   });
 
   it("grows slower once travel passes 0.6 of the plate width", () => {

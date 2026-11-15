@@ -26,12 +26,23 @@
   var SPRING_WN =
     -Math.log(0.001) / (SPRING_ZETA * (SPRING_SETTLE_MS / 1000));
   var GRID = 10;
+  var SHEET_CELLS = 64;
   var COARSE = 32;
   var PAD_FRAC = 0.3;
-  var GRAB_RADIUS = 0.07;
   var RUBBER_KNEE = 0.6;
-  var HOVER_CATCH = 8;
   var LEAN_PX = 6;
+  // Soft sheet. A grab is a brush on the already-deformed picture; the rest
+  // of the face is a damped membrane, so a pull travels through the features
+  // instead of stopping at a circle.
+  // ü = c²∇²u − ω²u − γu̇ + ν∇²u̇
+  var SHEET_HZ = 2.3;
+  var SHEET_REACH = 0.085;
+  var SHEET_DAMP = 0.14;
+  var SHEET_FLESH = 0.35;
+  var SHEET_HARDEST = 8;
+  var SHEET_GRIP = 2500;
+  var SHEET_HANDFUL = 0.085;
+  var SHEET_MAX_STEPS = 48;
 
   function photoRect(width, height) {
     var denom = 1 + 2 * PAD_FRAC;
@@ -405,22 +416,36 @@
   }
 
   function makeSpringState(reduced) {
+    var rn = Math.floor(PLATE / GRID) + 1;
+    var rc = rn - 1;
     var verts = [];
-    var n = Math.floor(PLATE / GRID) + 1;
-    for (var y = 0; y < n; y++) {
-      for (var x = 0; x < n; x++) {
-        verts.push({
-          ox: (x / (n - 1)) * PLATE,
-          oy: (y / (n - 1)) * PLATE,
-          x: (x / (n - 1)) * PLATE,
-          y: (y / (n - 1)) * PLATE,
-          vx: 0,
-          vy: 0,
-        });
+    for (var y = 0; y < rn; y++) {
+      for (var x = 0; x < rn; x++) {
+        var ox = (x / rc) * PLATE;
+        var oy = (y / rc) * PLATE;
+        verts.push({ ox: ox, oy: oy, x: ox, y: oy, vx: 0, vy: 0 });
+      }
+    }
+    var cells = SHEET_CELLS;
+    var n = cells + 1;
+    var count = n * n;
+    var fixed = new Uint8Array(count);
+    for (var j = 0; j < n; j++) {
+      for (var i = 0; i < n; i++) {
+        fixed[j * n + i] = i === 0 || j === 0 || i === cells || j === cells ? 1 : 0;
       }
     }
     return {
       verts: verts,
+      n: n,
+      cells: cells,
+      ux: new Float32Array(count),
+      uy: new Float32Array(count),
+      vx: new Float32Array(count),
+      vy: new Float32Array(count),
+      ax: new Float32Array(count),
+      ay: new Float32Array(count),
+      fixed: fixed,
       grabbing: false,
       grabX: 0,
       grabY: 0,
@@ -430,6 +455,14 @@
       overshoot: !reduced,
       leanX: 0,
       leanY: 0,
+      handX: 0,
+      handY: 0,
+      handReady: false,
+      pullX: 0,
+      pullY: 0,
+      _moving: 0,
+      _displaced: 0,
+      _far: 0,
     };
   }
 
@@ -448,28 +481,223 @@
     return sign * (knee + compressed);
   }
 
-  /**
-   * Offset that pulls a plate-space vertex toward the pointer.
-   * A vertex on the grab point follows the rubber-banded pointer.
-   * Past ~7% of the plate width the offset is zero.
-   */
-  function grabOffset(vertex, grabPoint, pointer, plateWidth) {
-    var width = plateWidth || PLATE;
-    var vx = vertex.x;
-    var vy = vertex.y;
-    if (vx == null) vx = vertex.ox;
-    if (vy == null) vy = vertex.oy;
-    var dist = Math.hypot(vx - grabPoint.x, vy - grabPoint.y);
-    var radius = GRAB_RADIUS * width;
-    if (!(dist < radius)) return { x: 0, y: 0 };
-    var travelX = pointer.x - grabPoint.x;
-    var travelY = pointer.y - grabPoint.y;
-    var travel = Math.hypot(travelX, travelY);
-    if (!(travel > 0)) return { x: 0, y: 0 };
-    var banded = rubberBand(travel, width);
-    var scale = banded / travel;
-    var falloff = 0.5 * (1 + Math.cos(Math.PI * (dist / radius)));
-    return { x: travelX * scale * falloff, y: travelY * scale * falloff };
+  function plateToCell(px, py, cells) {
+    return { x: (px / PLATE) * cells, y: (py / PLATE) * cells };
+  }
+
+  function bandedHand(grabX, grabY, pointerX, pointerY) {
+    var dx = pointerX - grabX;
+    var dy = pointerY - grabY;
+    var travel = Math.hypot(dx, dy);
+    if (!(travel > 0)) return { x: grabX, y: grabY };
+    var scale = rubberBand(travel, PLATE) / travel;
+    return { x: grabX + dx * scale, y: grabY + dy * scale };
+  }
+
+  function sheetParams(cells, reduced) {
+    var hz = reduced ? 6 : SHEET_HZ;
+    var damp = reduced ? 1 : SHEET_DAMP;
+    var w = 2 * Math.PI * hz;
+    var c = SHEET_REACH * cells * w;
+    return {
+      w2: w * w,
+      c2: c * c,
+      gamma: 2 * damp * w,
+      nu: SHEET_FLESH * c,
+      limit: RUBBER_KNEE * cells * (RUBBER_KNEE * cells),
+    };
+  }
+
+  function sheetSettle(spring) {
+    spring.ux.fill(0);
+    spring.uy.fill(0);
+    spring.vx.fill(0);
+    spring.vy.fill(0);
+    spring.ax.fill(0);
+    spring.ay.fill(0);
+    spring._moving = 0;
+    spring._displaced = 0;
+    spring._far = 0;
+  }
+
+  function sheetAccelerate(spring, p) {
+    var n = spring.n;
+    var cells = spring.cells;
+    var ux = spring.ux;
+    var uy = spring.uy;
+    var vx = spring.vx;
+    var vy = spring.vy;
+    var ax = spring.ax;
+    var ay = spring.ay;
+    var fixed = spring.fixed;
+    var c2 = p.c2;
+    var w2 = p.w2;
+    var gamma = p.gamma;
+    var nu = p.nu;
+    var limit = p.limit;
+    for (var j = 1; j < cells; j++) {
+      var row = j * n;
+      for (var i = 1; i < cells; i++) {
+        var k = row + i;
+        if (fixed[k]) continue;
+        var x = ux[k];
+        var y = uy[k];
+        var vxk = vx[k];
+        var vyk = vy[k];
+        var hard = w2 * Math.min(SHEET_HARDEST, 1 + (x * x + y * y) / limit);
+        ax[k] =
+          c2 * (ux[k - 1] + ux[k + 1] + ux[k - n] + ux[k + n] - 4 * x) -
+          hard * x -
+          gamma * vxk +
+          nu * (vx[k - 1] + vx[k + 1] + vx[k - n] + vx[k + n] - 4 * vxk);
+        ay[k] =
+          c2 * (uy[k - 1] + uy[k + 1] + uy[k - n] + uy[k + n] - 4 * y) -
+          hard * y -
+          gamma * vyk +
+          nu * (vy[k - 1] + vy[k + 1] + vy[k - n] + vy[k + n] - 4 * vyk);
+      }
+    }
+  }
+
+  // Skin currently under the brush takes on the hand's velocity.
+  // grip is how fast that happens, per second.
+  function sheetBrush(spring, hx, hy, hvx, hvy, radius, grip, dt) {
+    if (!(grip > 0) || !(radius > 0)) return;
+    var n = spring.n;
+    var cells = spring.cells;
+    var ux = spring.ux;
+    var uy = spring.uy;
+    var vx = spring.vx;
+    var vy = spring.vy;
+    var fixed = spring.fixed;
+    var r2 = radius * radius;
+    for (var j = 1; j < cells; j++) {
+      var row = j * n;
+      for (var i = 1; i < cells; i++) {
+        var k = row + i;
+        if (fixed[k]) continue;
+        var dx = i + ux[k] - hx;
+        var dy = j + uy[k] - hy;
+        var d2 = dx * dx + dy * dy;
+        if (d2 >= r2) continue;
+        var q = 1 - d2 / r2;
+        var hold = q * q * 2.4;
+        if (hold > 1) hold = 1;
+        var blend = 1 - Math.exp(-grip * hold * dt);
+        vx[k] += (hvx - vx[k]) * blend;
+        vy[k] += (hvy - vy[k]) * blend;
+      }
+    }
+  }
+
+  function sheetIntegrate(spring, p, dt, hx, hy, hvx, hvy, radius, grip) {
+    sheetAccelerate(spring, p);
+    var count = spring.n * spring.n;
+    var ux = spring.ux;
+    var uy = spring.uy;
+    var vx = spring.vx;
+    var vy = spring.vy;
+    var ax = spring.ax;
+    var ay = spring.ay;
+    var fixed = spring.fixed;
+    var i;
+    for (i = 0; i < count; i++) {
+      if (fixed[i]) continue;
+      vx[i] += ax[i] * dt;
+      vy[i] += ay[i] * dt;
+    }
+    if (grip > 0) sheetBrush(spring, hx, hy, hvx, hvy, radius, grip, dt);
+    var moving = 0;
+    var displaced = 0;
+    var far = 0;
+    for (i = 0; i < count; i++) {
+      if (fixed[i]) {
+        ux[i] = 0;
+        uy[i] = 0;
+        vx[i] = 0;
+        vy[i] = 0;
+        continue;
+      }
+      ux[i] += vx[i] * dt;
+      uy[i] += vy[i] * dt;
+      moving += vx[i] * vx[i] + vy[i] * vy[i];
+      var m = ux[i] * ux[i] + uy[i] * uy[i];
+      displaced += m * 40;
+      if (m > far) far = m;
+    }
+    spring._moving = moving;
+    spring._displaced = displaced;
+    spring._far = far;
+  }
+
+  function sheetSimulate(spring, elapsed, fromX, fromY, toX, toY, hvx, hvy, radius, grip) {
+    var p = sheetParams(spring.cells, !!spring.reduced);
+    var K = 8 * p.c2 + SHEET_HARDEST * p.w2;
+    var damp = p.gamma + 8 * p.nu;
+    var stable = (0.8 * (Math.sqrt(damp * damp + 4 * K) - damp)) / K;
+    var reach = 0;
+    if (grip > 0 && radius > 0) {
+      reach = Math.ceil(Math.hypot(toX - fromX, toY - fromY) / (radius * 0.5));
+    }
+    var steps = Math.ceil(elapsed / stable);
+    if (steps < 2) steps = 2;
+    if (reach > steps) steps = reach;
+    if (steps > SHEET_MAX_STEPS) steps = SHEET_MAX_STEPS;
+    var dt = elapsed / steps;
+    if (dt > stable) dt = stable;
+    var slowed = elapsed / (steps * dt);
+    var sx = hvx * slowed;
+    var sy = hvy * slowed;
+    for (var s = 1; s <= steps; s++) {
+      var f = s / steps;
+      sheetIntegrate(
+        spring,
+        p,
+        dt,
+        fromX + (toX - fromX) * f,
+        fromY + (toY - fromY) * f,
+        sx,
+        sy,
+        radius,
+        grip,
+      );
+    }
+    if (!isFinite(spring._moving + spring._displaced + spring._far)) sheetSettle(spring);
+  }
+
+  function syncSheet(spring) {
+    var sn = spring.n;
+    var sc = spring.cells;
+    var scale = PLATE / sc;
+    var ux = spring.ux;
+    var uy = spring.uy;
+    var verts = spring.verts;
+    var rn = Math.round(Math.sqrt(verts.length));
+    var rc = rn - 1;
+    for (var j = 0; j < rn; j++) {
+      var gy = (j / rc) * sc;
+      var j0 = gy < 0 ? 0 : gy > sc - 1 ? sc - 1 : gy | 0;
+      var fy = gy - j0;
+      if (fy < 0) fy = 0;
+      if (fy > 1) fy = 1;
+      var row0 = j0 * sn;
+      var row1 = row0 + sn;
+      for (var i = 0; i < rn; i++) {
+        var gx = (i / rc) * sc;
+        var i0 = gx < 0 ? 0 : gx > sc - 1 ? sc - 1 : gx | 0;
+        var fx = gx - i0;
+        if (fx < 0) fx = 0;
+        if (fx > 1) fx = 1;
+        var a = row0 + i0;
+        var w00 = (1 - fx) * (1 - fy);
+        var w10 = fx * (1 - fy);
+        var w01 = (1 - fx) * fy;
+        var w11 = fx * fy;
+        var v = verts[j * rn + i];
+        v.x = v.ox + (ux[a] * w00 + ux[a + 1] * w10 + ux[row1 + i0] * w01 + ux[row1 + i0 + 1] * w11) * scale;
+        v.y = v.oy + (uy[a] * w00 + uy[a + 1] * w10 + uy[row1 + i0] * w01 + uy[row1 + i0 + 1] * w11) * scale;
+      }
+    }
   }
 
   function springAxis(p, v, dt, wd, sigma) {
@@ -545,149 +773,76 @@
     }
   }
 
-  function clearEase(verts) {
-    for (var i = 0; i < verts.length; i++) {
-      verts[i]._easeFromX = null;
-      verts[i]._easeFromY = null;
-      verts[i]._easeT = 0;
-    }
-  }
-
-  function beginGrab(spring, x, y) {
-    spring.grabbing = true;
-    spring.home = false;
-    spring.hoverLive = false;
-    spring.grabX = x;
-    spring.grabY = y;
-    spring.hx = 0;
-    spring.hy = 0;
-    spring.prevPtr = null;
-    var verts = spring.verts;
-    var best = 0;
-    var bestD = Infinity;
-    for (var i = 0; i < verts.length; i++) {
-      var v = verts[i];
-      v.bx = v.x;
-      v.by = v.y;
-      v.vx = 0;
-      v.vy = 0;
-      v._easeFromX = null;
-      v._easeFromY = null;
-      v._easeT = 0;
-      var d = (v.ox - x) * (v.ox - x) + (v.oy - y) * (v.oy - y);
-      if (d < bestD) {
-        bestD = d;
-        best = i;
-      }
-    }
-    spring.pinIndex = best;
-  }
-
-  function applyGrab(spring, ptr) {
-    var grab = { x: spring.grabX, y: spring.grabY };
-    var pointer = { x: ptr.x, y: ptr.y };
-    var verts = spring.verts;
-    var pin = spring.pinIndex;
-    for (var i = 0; i < verts.length; i++) {
-      var v = verts[i];
-      var sample = i === pin ? grab : { x: v.ox, y: v.oy };
-      var off = grabOffset(sample, grab, pointer, PLATE);
-      v.x = v.bx + off.x;
-      v.y = v.by + off.y;
-      v.vx = 0;
-      v.vy = 0;
-    }
-    var full = grabOffset(grab, grab, pointer, PLATE);
-    spring.pullX = full.x;
-    spring.pullY = full.y;
-  }
-
-  function applyHover(spring, ptr, dtMs) {
-    var prev = spring.prevPtr;
-    var dx = 0;
-    var dy = 0;
-    if (prev) {
-      dx = ptr.x - prev.x;
-      dy = ptr.y - prev.y;
-    }
-    spring.prevPtr = { x: ptr.x, y: ptr.y };
-    var decay = Math.exp(-(dtMs > 0 ? dtMs : 0) / 110);
-    var hx = (spring.hx || 0) * decay + dx * 0.85;
-    var hy = (spring.hy || 0) * decay + dy * 0.85;
-    var mag = Math.hypot(hx, hy);
-    if (mag > HOVER_CATCH) {
-      hx = (hx / mag) * HOVER_CATCH;
-      hy = (hy / mag) * HOVER_CATCH;
-    }
-    spring.hx = hx;
-    spring.hy = hy;
-    var grab = { x: ptr.x, y: ptr.y };
-    var nudged = { x: ptr.x + hx, y: ptr.y + hy };
-    var verts = spring.verts;
-    for (var i = 0; i < verts.length; i++) {
-      var v = verts[i];
-      var off = grabOffset({ x: v.ox, y: v.oy }, grab, nudged, PLATE);
-      v.x = v.ox + off.x;
-      v.y = v.oy + off.y;
-      v.vx = 0;
-      v.vy = 0;
-      v._easeFromX = null;
-      v._easeFromY = null;
-    }
-  }
-
-  function meshCalm(verts) {
-    for (var i = 0; i < verts.length; i++) {
-      var v = verts[i];
-      if (Math.hypot(v.x - v.ox, v.y - v.oy) > 0.6) return false;
-      if (Math.hypot(v.vx || 0, v.vy || 0) > 12) return false;
-    }
-    return true;
-  }
-
   function stepMesh(spring, engine, dtMs) {
-    if (!spring || !engine || !spring.verts) return;
-    var dt = dtMs > 0 ? dtMs : 0;
+    if (!spring || !engine || !spring.ux) return;
+    var elapsed = dtMs > 0 ? dtMs / 1000 : 0.016;
+    if (elapsed < 0.001) elapsed = 0.001;
+    if (elapsed > 0.05) elapsed = 0.05;
     var ptr = engine.getPointer
       ? engine.getPointer()
       : { x: PLATE / 2, y: PLATE / 2, onFace: false, type: "mouse" };
     var grabbing = !!(engine.isGrabbing && engine.isGrabbing());
+    var cells = spring.cells;
+    var toX;
+    var toY;
+    var hvx = 0;
+    var hvy = 0;
+    var radius = 0;
+    var grip = 0;
+
     if (grabbing) {
       if (!spring.grabbing) {
         var gx = engine._grabPlateX;
         var gy = engine._grabPlateY;
         if (gx == null) gx = ptr.x;
         if (gy == null) gy = ptr.y;
-        beginGrab(spring, gx, gy);
+        spring.grabbing = true;
+        spring.home = false;
+        spring.grabX = gx;
+        spring.grabY = gy;
+        var origin = plateToCell(gx, gy, cells);
+        spring.handX = origin.x;
+        spring.handY = origin.y;
+        spring.handReady = true;
       }
-      applyGrab(spring, ptr);
-      spring.hoverLive = false;
+      var hand = bandedHand(spring.grabX, spring.grabY, ptr.x, ptr.y);
+      var hc = plateToCell(hand.x, hand.y, cells);
+      toX = hc.x;
+      toY = hc.y;
+      hvx = (toX - spring.handX) / elapsed;
+      hvy = (toY - spring.handY) / elapsed;
+      radius = Math.max(1.8, SHEET_HANDFUL * cells);
+      grip = SHEET_GRIP;
+      var grabbed = plateToCell(spring.grabX, spring.grabY, cells);
+      var scale = PLATE / cells;
+      spring.pullX = (toX - grabbed.x) * scale;
+      spring.pullY = (toY - grabbed.y) * scale;
     } else {
       if (spring.grabbing) {
         spring.grabbing = false;
         spring.home = true;
-        spring.hoverLive = false;
-        spring.prevPtr = null;
-        spring.hx = 0;
-        spring.hy = 0;
-        clearEase(spring.verts);
       }
-      var canHover =
-        ptr.onFace &&
-        ptr.type !== "touch" &&
-        (spring.hoverLive || meshCalm(spring.verts));
-      if (canHover) {
-        spring.hoverLive = true;
-        applyHover(spring, ptr, dt);
-      } else {
-        spring.hoverLive = false;
-        spring.prevPtr = null;
-        spring.hx = 0;
-        spring.hy = 0;
-        springStep(spring.verts, dt, !!spring.reduced);
+      var pc = plateToCell(ptr.x, ptr.y, cells);
+      toX = pc.x;
+      toY = pc.y;
+      if (!spring.handReady) {
+        spring.handX = toX;
+        spring.handY = toY;
+        spring.handReady = true;
       }
     }
-    spring._dtMs = dt;
+
+    var fromX = spring.handX;
+    var fromY = spring.handY;
+    sheetSimulate(spring, elapsed, fromX, fromY, toX, toY, hvx, hvy, radius, grip);
+    spring.handX = toX;
+    spring.handY = toY;
+    var homeCell = 0.35 * cells / PLATE;
+    if (!grabbing && !(grip > 0) && spring._far < homeCell * homeCell && spring._moving < 0.5) {
+      sheetSettle(spring);
+    }
+    syncSheet(spring);
+    spring._dtMs = dtMs > 0 ? dtMs : 0;
   }
 
   function updateLean(spring, dtMs) {
@@ -1364,8 +1519,8 @@
       return state.overshoot && state.home && !state.reduced;
     },
     rubberBand: rubberBand,
-    grabOffset: grabOffset,
     springStep: springStep,
+    stepMesh: stepMesh,
     resolveUrl: resolveUrl,
     ExpressionsFace: ExpressionsFace,
   };
