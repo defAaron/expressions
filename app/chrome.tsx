@@ -165,7 +165,7 @@ export function SiteFooter() {
         ))}
       </div>
       <div className="footer-links">
-        <a href="https://github.com/magichourhq" target="_blank" rel="noreferrer">
+        <a href="https://github.com/defAaron/expressions" target="_blank" rel="noreferrer">
           See GitHub repo
         </a>
         <a href="https://magichour.ai" target="_blank" rel="noreferrer">
