@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readAsset } from "../storage/files";
 import path from "node:path";
 import type { MagicHourClientLike } from "../worker/run";
 
@@ -180,10 +180,10 @@ async function uploadFile(apiKey: string, localPath: string): Promise<string> {
   if (!item?.upload_url || !item.file_path) {
     throw new Error("Magic Hour upload URL missing.");
   }
-  const bytes = await readFile(abs);
+  const bytes = await readAsset(localPath);
   const put = await fetch(item.upload_url, {
     method: "PUT",
-    body: bytes,
+    body: new Uint8Array(bytes),
   });
   if (!put.ok) {
     const putText = await readBody(put);

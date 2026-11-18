@@ -354,6 +354,13 @@ export function personMatte(
   image: RgbaImage,
   modelPath: string = MODEL_PATH,
 ): Promise<Uint8Array> {
+  if (process.env.VERCEL) {
+    return import("./vercel-vision").then(async ({ infer }) => {
+      const { matte, width, height } = await infer(image, "segment");
+      if (!matte || !width || !height) throw new Error("Missing segmentation result");
+      return resizeMatte(Buffer.from(matte, "base64"), width, height, image.width, image.height);
+    });
+  }
   return exclusive(async () => {
     let modelBytes: Buffer;
     try {

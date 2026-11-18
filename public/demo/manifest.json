@@ -1,11 +1,27 @@
 {
   "version": 1,
-  "size": [1024, 1024],
+  "size": [
+    1024,
+    1024
+  ],
   "alt": "Demo face",
   "eyes": {
-    "left": [310, 340, 150, 110],
-    "right": [560, 338, 148, 110],
-    "between": [512, 390]
+    "left": [
+      368,
+      395,
+      89,
+      25
+    ],
+    "right": [
+      574,
+      394,
+      87,
+      25
+    ],
+    "between": [
+      514,
+      405
+    ]
   },
   "plates": {
     "smile": "smile.webp"
@@ -14,11 +30,12 @@
     "sheet": "gaze.webp",
     "cols": 5,
     "rows": 5,
-    "cellWidth": 298,
-    "cellHeight": 110,
+    "cellWidth": 176,
+    "cellHeight": 25,
     "order": "row-major, x from -1 to 1, y from up to down, then half blink, then shut",
     "center": 12,
     "half": 25,
     "shut": 26
-  }
+  },
+  "matte": "matte.webp"
 }

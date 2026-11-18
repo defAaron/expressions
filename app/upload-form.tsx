@@ -213,7 +213,16 @@ export default function UploadForm({ children }: { children?: ReactNode }) {
     setError(null);
     try {
       const form = new FormData();
-      form.append("file", file);
+      if (process.env.NEXT_PUBLIC_VERCEL_ENV && file.size > 4 * 1024 * 1024) {
+        const { upload } = await import("@vercel/blob/client");
+        const blob = await upload(`incoming/${crypto.randomUUID()}`, file, {
+          access: "private", handleUploadUrl: "/api/upload-token", contentType: mediaType,
+          headers: { Authorization: `Bearer ${apiKey.trim()}` },
+        });
+        form.append("staged", blob.pathname);
+      } else {
+        form.append("file", file);
+      }
       form.append("mediaType", mediaType);
       form.append("likeness", "yes");
 

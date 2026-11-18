@@ -9,3 +9,5 @@ export async function POST(
   const params = await context.params;
   return postAdvance(request, { params });
 }
+
+export const maxDuration = 300;

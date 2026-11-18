@@ -5,3 +5,5 @@ const { postFaces } = createFaceHandlers();
 export function POST(request: Request): Promise<Response> {
   return postFaces(request);
 }
+
+export const maxDuration = 300;

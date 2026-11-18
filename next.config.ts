@@ -1,28 +1,13 @@
 import type { NextConfig } from "next";
 
+const visionAssets = [
+  "./models/*", "./recipes/v1.json", "./node_modules/@sparticuz/chromium/bin/*",
+  "./node_modules/@mediapipe/tasks-vision/vision_bundle.mjs",
+  "./node_modules/@mediapipe/tasks-vision/wasm/*",
+];
 const nextConfig: NextConfig = {
-  outputFileTracingIncludes: {
-    "/api/faces": [
-      "./models/face_landmarker.task",
-      "./models/selfie_segmenter.tflite",
-      "./node_modules/@mediapipe/tasks-vision/package.json",
-      "./node_modules/@mediapipe/tasks-vision/wasm/**/*",
-      "./node_modules/gl/**/*",
-      "./node_modules/bindings/**/*",
-      "./node_modules/file-uri-to-path/**/*",
-      "./node_modules/bit-twiddle/**/*",
-      "./node_modules/glsl-tokenizer/**/*",
-    ],
-  },
-  webpack: (config, { isServer }) => {
-    if (isServer) {
-      config.module.rules.push({
-        test: /[\\/]@mediapipe[\\/]tasks-vision[\\/].*\.js$/,
-        parser: { url: false },
-      });
-    }
-    return config;
-  },
+  serverExternalPackages: ["@sparticuz/chromium", "puppeteer-core", "gl", "@mediapipe/tasks-vision"],
+  outputFileTracingIncludes: { "/api/faces": visionAssets, "/api/faces/**/*": visionAssets },
+  outputFileTracingExcludes: { "/**/*": ["./node_modules/gl/**/*", "./private/faces/**/*", "./public/faces/**/*"] },
 };
-
 export default nextConfig;

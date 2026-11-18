@@ -1,5 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { readAsset, writeAsset } from "../storage/files";
 import sharp from "sharp";
 import { alignToSmile } from "../locker/align";
 import { compositePlate } from "../locker/composite";
@@ -45,9 +44,7 @@ export async function writeSmileLandmarks(
   faceId: string,
   landmarks: SmileLandmarks,
 ): Promise<void> {
-  const file = path.join(process.cwd(), bundlePath(faceId, "landmarks.json"));
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify(equalizeEyes(landmarks)));
+  await writeAsset(bundlePath(faceId, "landmarks.json"), JSON.stringify(equalizeEyes(landmarks)));
 }
 
 function scaleLandmarks(landmarks: SmileLandmarks, factor: number): SmileLandmarks {
@@ -89,13 +86,12 @@ async function decodeRgba(bytes: Buffer): Promise<RgbaImage> {
 }
 
 async function writeWebp(image: RgbaImage, relativePath: string): Promise<void> {
-  const file = path.join(process.cwd(), relativePath);
-  await mkdir(path.dirname(file), { recursive: true });
-  await sharp(Buffer.from(image.data), {
+  const bytes = await sharp(Buffer.from(image.data), {
     raw: { width: image.width, height: image.height, channels: 4 },
   })
     .webp({ quality: 90 })
-    .toFile(file);
+    .toBuffer();
+  await writeAsset(relativePath, bytes);
 }
 
 async function fitCanvas(image: RgbaImage): Promise<RgbaImage> {
@@ -194,16 +190,11 @@ export function createPlatePersister(input: {
     if (!smilePromise) {
       smilePromise = (async () => {
         const image = await decodeRgba(
-          await readFile(
-            path.join(process.cwd(), bundlePath(input.faceId, "smile.webp")),
-          ),
+          await readAsset(bundlePath(input.faceId, "smile.webp")),
         );
         const landmarks = equalizeEyes(
           JSON.parse(
-            await readFile(
-              path.join(process.cwd(), bundlePath(input.faceId, "landmarks.json")),
-              "utf8",
-            ),
+            (await readAsset(bundlePath(input.faceId, "landmarks.json"))).toString(),
           ) as SmileLandmarks,
         );
         return { image, landmarks };

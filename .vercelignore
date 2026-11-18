@@ -1,0 +1,11 @@
+.git
+.next
+.vercel
+.env*
+node_modules
+private
+public/faces
+.cursor
+.playwright-mcp
+.superpowers
+tsconfig.tsbuildinfo

@@ -1,6 +1,10 @@
+import { after } from "next/server";
+import { readAsset, writeAsset } from "../storage/files";
+import { blobFaceStore } from "../storage/face-store";
+import { del } from "@vercel/blob";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import type { Manifest } from "../contract/manifest";
@@ -34,10 +38,11 @@ export type FaceRecord = {
   smilePath?: string;
   likenessAt: Date;
   workerToken?: string;
+  matte?: boolean;
 };
 
 export type PrepareResult =
-  | { ok: true; smilePath: string }
+  | { ok: true; smilePath: string; matte?: boolean }
   | { ok: false; error: string };
 
 export interface FaceStore {
@@ -46,6 +51,7 @@ export interface FaceStore {
     id?: string;
     sourcePath: string;
     smilePath?: string;
+    matte?: boolean;
     likenessAt: Date;
   }): Promise<FaceRecord>;
   getFace(id: string): Promise<FaceRecord | null>;
@@ -147,7 +153,7 @@ function matteFailureMessage(error: unknown): string {
   return message;
 }
 
-function defaultManifestSkeleton(faceId: string): Manifest {
+export function defaultManifestSkeleton(faceId: string): Manifest {
   const manifest: Manifest = {
     version: 1,
     size: [1024, 1024],
@@ -171,7 +177,7 @@ function defaultManifestSkeleton(faceId: string): Manifest {
       shut: 26,
     },
   };
-  if (matteOnDisk(faceId)) manifest.matte = "matte.webp";
+  if (!process.env.VERCEL && matteOnDisk(faceId)) manifest.matte = "matte.webp";
   return manifest;
 }
 
@@ -346,21 +352,19 @@ export type FaceApiDeps = {
   createClient: typeof createMagicHourClient;
 };
 
-function appOrigin(): string {
+export function appOrigin(): string {
   return (
     process.env.NEXT_PUBLIC_APP_ORIGIN?.replace(/\/$/, "") ??
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : undefined) ??
     (process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
       : "http://localhost:3456")
   );
 }
 
-async function stampEyes(faceId: string, manifest: Manifest): Promise<void> {
+export async function stampEyes(faceId: string, manifest: Manifest): Promise<void> {
   try {
-    const raw = await readFile(
-      path.join(process.cwd(), bundlePath(faceId, "landmarks.json")),
-      "utf8",
-    );
+    const raw = (await readAsset(bundlePath(faceId, "landmarks.json"))).toString();
     const landmarks = JSON.parse(raw) as SmileLandmarks;
     const left = landmarks.leftEye;
     const right = landmarks.rightEye;
@@ -428,7 +432,7 @@ const storeGlobal = globalThis as typeof globalThis & {
 };
 const sharedFaceStore =
   storeGlobal.__expressionsFaceStore ??
-  (storeGlobal.__expressionsFaceStore = publishLocalBundles(createInMemoryFaceStore()));
+  (storeGlobal.__expressionsFaceStore = process.env.VERCEL ? blobFaceStore(appOrigin()) : publishLocalBundles(createInMemoryFaceStore()));
 
 function isFaceModelMissingError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -456,11 +460,7 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
       }
     },
     parseRecipe,
-    baseUrl:
-      process.env.NEXT_PUBLIC_APP_ORIGIN?.replace(/\/$/, "") ??
-      (process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : "http://localhost:3456"),
+    baseUrl: appOrigin(),
     prepare: async (bytes, mediaType, faceId) => {
       try {
         const detect = createMediaPipeDetector();
@@ -472,9 +472,7 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
           return { ok: false, error: cropped.rejection.code };
         }
         const smileRel = bundlePath(faceId, "smile.webp");
-        const smileAbs = path.join(process.cwd(), smileRel);
-        await mkdir(path.dirname(smileAbs), { recursive: true });
-        await sharp(Buffer.from(cropped.image.data), {
+        const smile = await sharp(Buffer.from(cropped.image.data), {
           raw: {
             width: cropped.image.width,
             height: cropped.image.height,
@@ -482,7 +480,9 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
           },
         })
           .webp()
-          .toFile(smileAbs);
+          .toBuffer();
+        await writeAsset(smileRel, smile);
+        let hasMatte = false;
         try {
           const matte = await personMatte(cropped.image);
           const encoded = await encodePersonMatteWebp(
@@ -490,16 +490,15 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
             cropped.image.width,
             cropped.image.height,
           );
-          await writeFile(path.join(process.cwd(), bundlePath(faceId, "matte.webp")), encoded);
+          await writeAsset(bundlePath(faceId, "matte.webp"), encoded);
+          hasMatte = true;
         } catch (error) {
           console.error(`[expressions] matte ${faceId} ${matteFailureMessage(error)}`);
         }
         const sourceRel = sourcePath(faceId);
-        const sourceAbs = path.join(process.cwd(), sourceRel);
-        await mkdir(path.dirname(sourceAbs), { recursive: true });
-        await writeFile(sourceAbs, bytes);
+        await writeAsset(sourceRel, bytes);
         await writeSmileLandmarks(faceId, cropped.landmarks);
-        return { ok: true, smilePath: smileRel };
+        return { ok: true, smilePath: smileRel, matte: hasMatte };
       } catch (error) {
         if (isFaceModelMissingError(error)) {
           return { ok: false, error: "face_model_missing" };
@@ -563,6 +562,11 @@ function isPlateGroup(value: string): value is PlateGroup {
   return (PLATE_GROUPS as readonly string[]).includes(value);
 }
 
+function schedule(work: () => Promise<void>) {
+  if (process.env.VERCEL) after(work);
+  else void work();
+}
+
 export function createFaceHandlers() {
   return {
     async postFaces(request: Request, deps: FaceApiDeps = defaultDeps()): Promise<Response> {
@@ -584,7 +588,9 @@ export function createFaceHandlers() {
 
       const mediaType = form.get("mediaType");
       const file = form.get("file");
-      if (typeof mediaType !== "string" || !(file instanceof Blob)) {
+      const staged = form.get("staged");
+      const stagedKey = process.env.VERCEL && typeof staged === "string" && /^incoming\/[a-f0-9-]{36}$/.test(staged) ? staged : null;
+      if (typeof mediaType !== "string" || (!(file instanceof Blob) && !stagedKey)) {
         return json({ error: "invalid_form" }, 400);
       }
 
@@ -598,7 +604,8 @@ export function createFaceHandlers() {
         return recipeOutcome.response;
       }
 
-      const bytes = Buffer.from(await file.arrayBuffer());
+      const bytes = stagedKey ? await readAsset(stagedKey) : Buffer.from(await (file as Blob).arrayBuffer());
+      if (stagedKey) await del(stagedKey);
       const id = deps.newFaceId();
       const prepared = await deps.prepare(bytes, mediaType, id);
       if (!prepared.ok) {
@@ -608,14 +615,15 @@ export function createFaceHandlers() {
         id,
         sourcePath: sourcePath(id),
         smilePath: prepared.smilePath,
+        matte: prepared.matte,
         likenessAt: new Date(),
       });
       await deps.store.writeManifest(id);
 
-      void deps.runWorker({ faceId: id, apiKey }).catch((error: unknown) => {
+      schedule(() => deps.runWorker({ faceId: id, apiKey }).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "worker failed";
         console.error(`[expressions] worker ${id} ${message}`);
-      });
+      }));
 
       return json({ id }, 200);
     },
@@ -691,7 +699,7 @@ export function createFaceHandlers() {
       }
 
       await deps.store.updatePlate(face.id, plate, { status: "queued" });
-      void deps.runWorker({ faceId: face.id, apiKey, plates: [plate] });
+      schedule(() => deps.runWorker({ faceId: face.id, apiKey, plates: [plate] }));
 
       return json({ ok: true }, 200);
     },
@@ -774,7 +782,7 @@ export function createFaceHandlers() {
         return json({ ok: true }, 200);
       }
 
-      void deps.runWorker({ faceId: face.id, apiKey, plates: pending });
+      schedule(() => deps.runWorker({ faceId: face.id, apiKey, plates: pending }));
 
       return json({ ok: true }, 200);
     },

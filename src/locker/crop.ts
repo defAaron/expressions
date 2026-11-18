@@ -1186,6 +1186,12 @@ function restoreHost(key: string, value: unknown): void {
 }
 
 export function createMediaPipeDetector(modelPath: string = MODEL_PATH): FaceDetector {
+  if (process.env.VERCEL) return async image => {
+    const { infer } = await import("./vercel-vision");
+    const { faces } = await infer(image, "face");
+    if (!faces) throw new Error("Missing face detection result");
+    return faces.map(points => faceFromLandmarks(points, image.width, image.height));
+  };
   return (image) =>
     exclusive(async () => {
       let modelBytes: Buffer;
