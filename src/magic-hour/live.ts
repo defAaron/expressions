@@ -20,6 +20,8 @@ async function readBody(response: Response): Promise<string> {
   return response.text();
 }
 
+class RejectedCredential extends Error {}
+
 export function createLiveMagicHourClient(apiKey: string): MagicHourClientLike {
   const uploads = new Map<string, Promise<string>>();
 
@@ -31,7 +33,7 @@ export function createLiveMagicHourClient(apiKey: string): MagicHourClientLike {
     try {
       return await pending;
     } catch (error) {
-      uploads.delete(localPath);
+      if (!(error instanceof RejectedCredential)) uploads.delete(localPath);
       throw error;
     }
   }
@@ -170,6 +172,9 @@ async function uploadFile(apiKey: string, localPath: string): Promise<string> {
     body: JSON.stringify({ items: [{ type: "image", extension }] }),
   });
   const text = await readBody(response);
+  if (response.status === 401 || response.status === 403) {
+    throw new RejectedCredential("Magic Hour rejected the API key.");
+  }
   if (!response.ok) {
     throw new Error(scrub(text, apiKey) || `HTTP ${response.status}`);
   }

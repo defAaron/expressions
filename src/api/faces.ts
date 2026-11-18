@@ -509,7 +509,7 @@ function defaultDeps(overrides?: Partial<FaceApiDeps>): FaceApiDeps {
     rateLimit: new IpRateLimiter(10, 60_000),
     newFaceId: () => randomBytes(16).toString("hex"),
     runWorker: async ({ faceId, apiKey, plates }) => {
-      console.error(`[expressions] worker start ${faceId}`);
+      console.info(`[expressions] worker start ${faceId}`);
       const recipeBody = deps.readRecipe();
       if (!recipeBody) {
         console.error(`[expressions] worker ${faceId} recipe missing`);

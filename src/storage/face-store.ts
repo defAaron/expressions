@@ -14,7 +14,22 @@ async function readState(id: string) {
   return { state, etag: blob.blob.etag };
 }
 
+// A worker handles several plates concurrently. Serialize its edits to one face,
+// and retain ETag checks for edits made by separate function instances.
+const pendingChanges = new Map<string, Promise<boolean>>();
+
 async function change(id: string, update: (state: State) => boolean) {
+  const previous = pendingChanges.get(id) ?? Promise.resolve(true);
+  const next = previous.catch(() => false).then(() => applyChange(id, update));
+  pendingChanges.set(id, next);
+  try {
+    return await next;
+  } finally {
+    if (pendingChanges.get(id) === next) pendingChanges.delete(id);
+  }
+}
+
+async function applyChange(id: string, update: (state: State) => boolean) {
   for (let attempt = 0; attempt < 20; attempt++) {
     const current = await readState(id);
     if (!current || !update(current.state)) return false;
@@ -24,7 +39,9 @@ async function change(id: string, update: (state: State) => boolean) {
       });
       return true;
     } catch (error) {
-      if (!(error instanceof BlobPreconditionFailedError)) throw error;
+      const conflict = error instanceof BlobPreconditionFailedError ||
+        (error instanceof Error && error.message.includes("conflicting operation"));
+      if (!conflict) throw error;
       await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 100));
     }
   }
