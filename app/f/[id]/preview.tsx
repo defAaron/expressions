@@ -222,7 +222,7 @@ export default function Preview({ faceId }: { faceId: string }) {
     );
   } else {
     body = (
-      <div className="split">
+      <div className="split generated-preview">
         <section className="panel panel-key">
           <div>
             <h2>Enter your Magic Hour API key</h2>

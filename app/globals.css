@@ -239,7 +239,7 @@ a:focus-visible {
 }
 
 .portrait {
-  width: min(100%, 18.5rem);
+  width: min(100%, 37rem);
   overflow: hidden;
   border: 1px solid rgba(24, 36, 58, 0.1);
   border-radius: 1rem;
@@ -863,6 +863,10 @@ a:focus-visible {
 
   .split {
     grid-template-columns: 0.9fr 1.1fr;
+  }
+
+  .generated-preview {
+    grid-template-columns: calc(37rem + 5rem + 1px) minmax(0, 1fr);
   }
 
   .panel {

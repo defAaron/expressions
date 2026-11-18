@@ -359,6 +359,74 @@ describe("face.js mesh displacement", () => {
     expect(Number.isFinite(held.x + across.x + far.x)).toBe(true);
   });
 
+  it.each([
+    { name: "cheek", u: 0.63, v: 0.51, held: 0.229, rebound: 0.060 },
+    { name: "crown", u: 0.50, v: 0.15, held: 0.249, rebound: 0.041 },
+    { name: "shoulder", u: 0.78, v: 0.80, held: 0.193, rebound: 0.099 },
+  ])("matches the measured $name pull and rebound", ({ u, v, held, rebound }) => {
+    const api = loadFaceApi();
+    const spring = api.makeSpringState(false);
+    api.bindSpringMatte(spring, () => 1);
+    const x = u * api.PLATE;
+    const y = v * api.PLATE;
+    let pointerX = x;
+    let grabbing = true;
+    const engine = {
+      isGrabbing: () => grabbing,
+      _grabPlateX: x,
+      _grabPlateY: y,
+      getPointer: () => ({ x: pointerX, y, onFace: true, type: "mouse" }),
+    };
+    const vertex = vertAt(spring, api.PLATE, x, y);
+    const displacement = () => (vertex.x - vertex.ox) / api.PLATE;
+    for (let frame = 1; frame <= 12; frame++) {
+      pointerX = x + 0.2 * api.PLATE * frame / 12;
+      api.stepMesh(spring, engine, 16);
+    }
+    for (let frame = 0; frame < 12; frame++) api.stepMesh(spring, engine, 16);
+    expect(Math.abs(displacement() - held)).toBeLessThan(0.015);
+    grabbing = false;
+    let minimum = 0;
+    for (let frame = 0; frame < 75; frame++) {
+      api.stepMesh(spring, engine, 16);
+      minimum = Math.min(minimum, displacement());
+    }
+    expect(Math.abs(minimum + rebound)).toBeLessThan(0.015);
+  });
+
+  it("keeps the grabbed shoulder under the pointer when a pull pauses and reverses", () => {
+    const api = loadFaceApi();
+    const spring = api.makeSpringState(false);
+    api.bindSpringMatte(spring, (x, y) =>
+      (x >= 352 && x <= 672 && y >= 96 && y <= 620) ||
+      (x >= 240 && x <= 848 && y >= 580 && y <= 960) ? 1 : 0,
+    );
+    const shoulder = vertAt(spring, api.PLATE, 810, 835);
+    let pointerX = shoulder.ox;
+    const engine = {
+      isGrabbing: () => true,
+      _grabPlateX: shoulder.ox,
+      _grabPlateY: shoulder.oy,
+      getPointer: () => ({ x: pointerX, y: shoulder.oy, onFace: true, type: "mouse" }),
+    };
+    function moveTo(x: number, frames: number) {
+      const start = pointerX;
+      for (let frame = 1; frame <= frames; frame++) {
+        pointerX = start + (x - start) * frame / frames;
+        api.stepMesh(spring, engine, 16);
+      }
+    }
+
+    moveTo(shoulder.ox + 176, 3);
+    moveTo(pointerX, 30);
+    expect(Math.abs(shoulder.x - shoulder.ox - api.rubberBand(pointerX - shoulder.ox, api.PLATE))).toBeLessThan(4);
+
+    moveTo(shoulder.ox - 96, 5);
+    expect(Math.abs(shoulder.x - shoulder.ox - api.rubberBand(pointerX - shoulder.ox, api.PLATE))).toBeLessThan(4);
+    moveTo(pointerX, 30);
+    expect(Math.abs(shoulder.x - shoulder.ox - api.rubberBand(pointerX - shoulder.ox, api.PLATE))).toBeLessThan(4);
+  });
+
   it("keeps the background and the frame still while the head is pulled and released", () => {
     const api = loadFaceApi();
     const spring = api.makeSpringState(false);
@@ -407,7 +475,7 @@ describe("face.js mesh displacement", () => {
       for (let i = 0; i < cells; i++) {
         const px = (i / cells) * api.PLATE;
         const py = (j / cells) * api.PLATE;
-        data[j * cells + i] = personAt(px, py) ? 255 : 0;
+        data[j * cells + i] = personAt(px, py) ? 255 : 1;
       }
     }
     expect(
@@ -452,7 +520,7 @@ describe("face.js mesh displacement", () => {
     const shoulder = dx(700, 900);
     expect(cheek).toBeGreaterThan(api.PLATE * 0.08);
     expect(hair).toBeGreaterThan(8);
-    expect(shoulder).toBeGreaterThan(8);
+    expect(Math.abs(shoulder)).toBeLessThan(api.PLATE * 0.02);
     expect(hair).toBeLessThan(cheek);
     expect(shoulder).toBeLessThan(cheek);
 
@@ -462,6 +530,44 @@ describe("face.js mesh displacement", () => {
       still(0, 0);
       still(40, 400);
     }
+  });
+
+  it.each([
+    { part: "hair", x: 512, y: 128 },
+    { part: "shoulder", x: 816, y: 832 },
+  ])("can grab a soft matte edge at the $part and spring it home", ({ x, y }) => {
+    const api = loadFaceApi();
+    const spring = api.makeSpringState(false);
+    expect(api.bindSpringMatte(spring, (px, py) => {
+      if (px >= 352 && px <= 672 && py >= 96 && py <= 620) {
+        return py <= 160 ? 0.35 : 1;
+      }
+      if (px >= 240 && px <= 848 && py >= 580 && py <= 960) {
+        return px >= 784 ? 0.35 : 1;
+      }
+      return 0;
+    })).toBe(true);
+    let grabbing = true;
+    let pointerX = x;
+    const engine = {
+      isGrabbing: () => grabbing,
+      _grabPlateX: x,
+      _grabPlateY: y,
+      getPointer: () => ({ x: pointerX, y, onFace: true, type: "mouse" }),
+    };
+    for (let frame = 0; frame < 12; frame++) {
+      pointerX += 8;
+      api.stepMesh(spring, engine, 16);
+    }
+
+    const held = vertAt(spring, api.PLATE, x, y);
+    const background = vertAt(spring, api.PLATE, 960, y);
+    expect(held.x - held.ox).toBeGreaterThan(50);
+    expect(background.x).toBe(background.ox);
+    grabbing = false;
+    for (let frame = 0; frame < 150; frame++) api.stepMesh(spring, engine, 16);
+    expect(Math.abs(held.x - held.ox)).toBeLessThan(0.05);
+    expect(Math.abs(held.y - held.oy)).toBeLessThan(0.05);
   });
 
   it("shifts the opposite side of the head a little in the direction of a cheek tug", () => {

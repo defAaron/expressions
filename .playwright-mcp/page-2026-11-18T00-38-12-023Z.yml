@@ -1,0 +1,34 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - heading "Expressions" [level=1] [ref=e5]
+      - paragraph [ref=e6]: Turn a single image into something expressive.
+    - generic [ref=e7]:
+      - generic [ref=e8]:
+        - generic [ref=e9]:
+          - heading "Enter your Magic Hour API key" [level=2] [ref=e10]
+          - generic [ref=e11]:
+            - generic [ref=e12]: API key
+            - generic [ref=e13]:
+              - textbox "API key" [ref=e17]:
+                - /placeholder: mhk_live
+              - button "Show API key" [ref=e18] [cursor=pointer]
+        - paragraph [ref=e23]: Live demo
+      - generic [ref=e25]:
+        - heading "Upload an image" [level=2] [ref=e26]
+        - list [ref=e27]:
+          - listitem [ref=e28]: JPEG, PNG, or WebP, 15 MB or smaller
+        - button "Choose File" [ref=e29]
+        - generic [ref=e30]:
+          - strong [ref=e34]: Drop your image here
+          - button "Browse files" [ref=e35] [cursor=pointer]
+        - generic [ref=e36]:
+          - generic [ref=e37] [cursor=pointer]:
+            - checkbox "I confirm this is my face or I have the right to use this likeness." [ref=e38]
+            - generic [ref=e39]: I confirm this is my face or I have the right to use this likeness.
+          - button "Submit" [disabled]
+    - generic [ref=e41]:
+      - link "See GitHub repo" [ref=e42]:
+        - /url: https://github.com/magichourhq
+      - link "Check out Magic Hour" [ref=e43]:
+        - /url: https://magichour.ai

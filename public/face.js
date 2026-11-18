@@ -26,7 +26,8 @@
   var SPRING_WN =
     -Math.log(0.001) / (SPRING_ZETA * (SPRING_SETTLE_MS / 1000));
   var GRID = 10;
-  var SHEET_CELLS = 64;
+  var CELLS_PER_IMAGE = 45;
+  var SHEET_CELLS = 72;
   var COARSE = 32;
   var PAD_FRAC = 0.3;
   var RUBBER_KNEE = 0.6;
@@ -38,23 +39,18 @@
   var HEAD_RY = 360;
   var NECK_Y = 800;
   var HEAD_FALLOFF = 0.08;
-  // Crown-level shift along the rubber-banded pull. Half the pull, and never
-  // more than about 0.08 of the plate, so a long drag cannot walk the skull
-  // off the frame. The neck lever scales this down toward the chin.
-  var HEAD_SHIFT_GAIN = 0.5;
-  var HEAD_SHIFT_CAP = 0.08;
   // Soft sheet. A grab is a brush on the already-deformed picture; the rest
   // of the person is a damped membrane, so a pull travels through the hair
-  // and the shoulders. Background and the frame stay pinned. With no matte,
-  // the head ellipse is the person.
+  // and the shoulders. The frame and mesh away from the person stay pinned.
+  // With no matte, the head ellipse is the person.
   // ü = c²∇²u − ω²u − γu̇ + ν∇²u̇
   // Reach is how far a pull spreads, as a fraction of the plate. Flesh is
   // how viscously the silhouette flows. Hz and damp are how fast it returns
   // and how little it sloshes.
-  var SHEET_HZ = 2.645;
-  var SHEET_REACH = 0.24;
-  var SHEET_DAMP = 0.161;
-  var SHEET_FLESH = 0.2975;
+  var SHEET_HZ = 2.3;
+  var SHEET_REACH = 0.085;
+  var SHEET_DAMP = 0.14;
+  var SHEET_FLESH = 0.35;
   var SHEET_HARDEST = 8;
   var SHEET_GRIP = 2500;
   var SHEET_HANDFUL = 0.085;
@@ -464,36 +460,6 @@
     return u * u * (3 - 2 * u);
   }
 
-  // 0 at the neck, 1 at the crown, so a tug pivots about the base of the neck.
-  // Used only until a person matte is bound.
-  function neckLever(py) {
-    var span = NECK_Y - (HEAD_CY - HEAD_RY);
-    if (!(span > 0)) return 0;
-    var t = (NECK_Y - py) / span;
-    if (t < 0) return 0;
-    if (t > 1) return 1;
-    return t;
-  }
-
-  // 0 at the bottom of the person, 1 at the top. The head moves more than the
-  // shoulders, and shoulders above the hinge still move. No matte: neck hinge.
-  function bodyLever(spring, py) {
-    if (!spring || !spring.hasMatte) return neckLever(py);
-    var span = spring.bodyPivot - spring.bodyTop;
-    if (!(span > 0)) return 0;
-    var t = (spring.bodyPivot - py) / span;
-    if (t < 0) return 0;
-    if (t > 1) return 1;
-    return t;
-  }
-
-  function headShiftAim(pullX, pullY) {
-    var mag = Math.hypot(pullX || 0, pullY || 0);
-    if (!(mag > 0.001)) return { x: 0, y: 0 };
-    var amp = Math.min(HEAD_SHIFT_CAP * PLATE, HEAD_SHIFT_GAIN * mag);
-    return { x: (pullX / mag) * amp, y: (pullY / mag) * amp };
-  }
-
   function makeSpringState(reduced) {
     var rn = Math.floor(PLATE / GRID) + 1;
     var rc = rn - 1;
@@ -512,8 +478,8 @@
     for (var j = 0; j < n; j++) {
       for (var i = 0; i < n; i++) {
         var border = i === 0 || j === 0 || i === cells || j === cells;
-        var px = (i / cells) * PLATE;
-        var py = (j / cells) * PLATE;
+        var px = (i / CELLS_PER_IMAGE - PAD_FRAC) * PLATE;
+        var py = (j / CELLS_PER_IMAGE - PAD_FRAC) * PLATE;
         // No matte yet: pin the frame and everything outside the head ellipse.
         fixed[j * n + i] = border || headOutside(px, py) ? 1 : 0;
       }
@@ -557,15 +523,15 @@
     return u * u * (3 - 2 * u);
   }
 
-  // Luminance above this is the person. At or below it, the node stays pinned.
-  var PERSON_LUMA = 0.5;
-  // How far above the cut a soft matte ramps to full weight.
-  var PERSON_SOFT = 0.35;
+  // Keep a small buffer of mesh around visible hair and clothing so their
+  // outlines can move without hitting a pinned node at the edge of the matte.
+  var PERSON_LUMA = 0.12;
+  var MATTE_MARGIN_CELLS = 3;
 
-  function channelLuma(r, g, b) {
+  function channelLuma(r, g, b, byteChannels) {
     var l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     if (!(l > 0)) return 0;
-    if (l > 1) l = l / 255;
+    if (byteChannels || l > 1) l = l / 255;
     if (l > 1) l = 1;
     return l;
   }
@@ -603,6 +569,7 @@
     }
     if (!data || !(width > 0) || !(height > 0)) return null;
     var pixels = width * height;
+    var byteChannels = data.BYTES_PER_ELEMENT === 1;
     var stride = 1;
     if (data.length >= pixels * 4) stride = 4;
     else if (data.length >= pixels * 3) stride = 3;
@@ -617,14 +584,14 @@
       if (stride === 1) {
         var s = data[i];
         if (!(s > 0)) return 0;
-        return s > 1 ? s / 255 : s;
+        return byteChannels || s > 1 ? s / 255 : s;
       }
-      return channelLuma(data[i], data[i + 1], data[i + 2]);
+      return channelLuma(data[i], data[i + 1], data[i + 2], byteChannels);
     };
   }
 
-  // Pin from the person matte: free on the body, pinned on the background and
-  // the frame. Feather near the silhouette so the edge does not tear.
+  // The matte handles visibility. Pin the frame and the mesh away from the
+  // person, leaving room around the silhouette for its antialiased edge.
   function bindSpringMatte(spring, matte) {
     if (!spring || !spring.fixed || !matte) return false;
     var read = lumaReader(matte);
@@ -633,7 +600,7 @@
     var n = spring.n;
     var count = n * n;
     var nextFixed = new Uint8Array(count);
-    var luma = new Float32Array(count);
+    var dist = new Float32Array(count);
     var top = PLATE;
     var bottom = 0;
     var person = 0;
@@ -644,15 +611,11 @@
       for (j = 0; j < n; j++) {
         for (i = 0; i < n; i++) {
           k = j * n + i;
-          var border = i === 0 || j === 0 || i === cells || j === cells;
-          var px = (i / cells) * PLATE;
-          var py = (j / cells) * PLATE;
-          var lum = read(px, py);
-          if (!(lum > 0)) lum = 0;
-          if (lum > 1) lum = 1;
-          luma[k] = lum;
-          nextFixed[k] = !border && lum > PERSON_LUMA ? 0 : 1;
-          if (lum > PERSON_LUMA) {
+          var px = (i / CELLS_PER_IMAGE - PAD_FRAC) * PLATE;
+          var py = (j / CELLS_PER_IMAGE - PAD_FRAC) * PLATE;
+          var isPerson = px >= 0 && py >= 0 && px <= PLATE && py <= PLATE && read(px, py) > PERSON_LUMA;
+          dist[k] = isPerson ? 0 : Infinity;
+          if (isPerson) {
             person++;
             if (py < top) top = py;
             if (py > bottom) bottom = py;
@@ -664,11 +627,8 @@
     }
     if (!(person > 0) || !(bottom > top)) return false;
 
-    var cellPx = PLATE / cells;
+    var cellPx = PLATE / CELLS_PER_IMAGE;
     var diag = cellPx * Math.SQRT2;
-    var dist = new Float32Array(count);
-    var INF = 1e9;
-    for (k = 0; k < count; k++) dist[k] = nextFixed[k] ? 0 : INF;
     for (j = 0; j < n; j++) {
       for (i = 0; i < n; i++) {
         k = j * n + i;
@@ -699,47 +659,37 @@
     }
 
     var weight = new Float32Array(count);
-    var band = HEAD_FALLOFF * PLATE;
-    for (k = 0; k < count; k++) {
-      if (nextFixed[k]) {
-        weight[k] = 0;
+    var margin = MATTE_MARGIN_CELLS * cellPx;
+    for (j = 0; j < n; j++) {
+      for (i = 0; i < n; i++) {
+        k = j * n + i;
+        var frameDistance = Math.min(i, j, cells - i, cells - j);
+        var outlineWeight = smooth01(1 - dist[k] / margin);
+        weight[k] = outlineWeight * smooth01(frameDistance / 2);
+        // Simulate across the silhouette so its edge stretches freely.
+        if (frameDistance > 0 && j / CELLS_PER_IMAGE - PAD_FRAC < 0.985) continue;
+        nextFixed[k] = 1;
         spring.ux[k] = 0;
         spring.uy[k] = 0;
         spring.vx[k] = 0;
         spring.vy[k] = 0;
         spring.ax[k] = 0;
         spring.ay[k] = 0;
-        continue;
       }
-      var edgeT = band > 0 ? dist[k] / band : 1;
-      var lumaT = (luma[k] - PERSON_LUMA) / PERSON_SOFT;
-      weight[k] = smooth01(lumaT) * smooth01(edgeT);
     }
     spring.fixed = nextFixed;
     spring.weight = weight;
     spring.hasMatte = true;
-    spring.bodyTop = top;
-    spring.bodyPivot = bottom;
     return true;
   }
 
-  /**
-   * Compress pointer travel. At and under 0.6 of the plate, travel is unchanged.
-   * Past that knee, extra travel adds progressively less displacement.
-   */
   function rubberBand(travel, plateWidth) {
-    var sign = travel < 0 ? -1 : 1;
-    var t = Math.abs(travel);
-    var width = plateWidth || PLATE;
-    var knee = RUBBER_KNEE * width;
-    if (t <= knee) return sign * t;
-    var extra = t - knee;
-    var compressed = (0.35 * extra) / (1 + extra / (0.18 * width));
-    return sign * (knee + compressed);
+    var limit = RUBBER_KNEE * (plateWidth || PLATE);
+    return limit * Math.tanh(travel / limit);
   }
 
   function plateToCell(px, py, cells) {
-    return { x: (px / PLATE) * cells, y: (py / PLATE) * cells };
+    return { x: (px / PLATE + PAD_FRAC) * cells, y: (py / PLATE + PAD_FRAC) * cells };
   }
 
   function bandedHand(grabX, grabY, pointerX, pointerY) {
@@ -888,7 +838,7 @@
   }
 
   function sheetSimulate(spring, elapsed, fromX, fromY, toX, toY, hvx, hvy, radius, grip) {
-    var p = sheetParams(spring.cells, !!spring.reduced);
+    var p = sheetParams(CELLS_PER_IMAGE, !!spring.reduced);
     var K = 8 * p.c2 + SHEET_HARDEST * p.w2;
     var damp = p.gamma + 8 * p.nu;
     var stable = (0.8 * (Math.sqrt(damp * damp + 4 * K) - damp)) / K;
@@ -905,14 +855,17 @@
     var slowed = elapsed / (steps * dt);
     var sx = hvx * slowed;
     var sy = hvy * slowed;
+    var stepX = (toX - fromX) / steps;
+    var stepY = (toY - fromY) / steps;
     for (var s = 1; s <= steps; s++) {
-      var f = s / steps;
+      var hx = fromX + stepX * s;
+      var hy = fromY + stepY * s;
       sheetIntegrate(
         spring,
         p,
         dt,
-        fromX + (toX - fromX) * f,
-        fromY + (toY - fromY) * f,
+        hx,
+        hy,
         sx,
         sy,
         radius,
@@ -925,8 +878,8 @@
   function sampleGrid(spring, field, px, py) {
     var sn = spring.n;
     var sc = spring.cells;
-    var gx = (px / PLATE) * sc;
-    var gy = (py / PLATE) * sc;
+    var gx = (px / PLATE + PAD_FRAC) * CELLS_PER_IMAGE;
+    var gy = (py / PLATE + PAD_FRAC) * CELLS_PER_IMAGE;
     var j0 = gy < 0 ? 0 : gy > sc - 1 ? sc - 1 : gy | 0;
     var i0 = gx < 0 ? 0 : gx > sc - 1 ? sc - 1 : gx | 0;
     var fy = gy - j0;
@@ -947,12 +900,15 @@
   }
 
   function syncSheet(spring) {
-    var scale = PLATE / spring.cells;
+    var scale = PLATE / CELLS_PER_IMAGE;
     var ux = spring.ux;
     var uy = spring.uy;
     var verts = spring.verts;
     var weight = spring.weight;
     var rn = Math.round(Math.sqrt(verts.length));
+    var angle = 5 * spring.shiftX / PLATE;
+    var cos = Math.cos(angle);
+    var sin = Math.sin(angle);
     var useMatte = !!(spring.hasMatte && weight);
     for (var j = 0; j < rn; j++) {
       for (var i = 0; i < rn; i++) {
@@ -961,11 +917,13 @@
         var my = sampleGrid(spring, uy, v.ox, v.oy) * scale;
         // Person weight, not the head ellipse, so hair and shoulders move.
         var hw = useMatte
-          ? sampleGrid(spring, weight, v.ox, v.oy)
+          ? Number(sampleGrid(spring, weight, v.ox, v.oy) > 0)
           : headWeight(v.ox, v.oy);
-        var turn = hw * bodyLever(spring, v.oy);
-        v.x = v.ox + mx * hw + (spring.shiftX || 0) * turn;
-        v.y = v.oy + my * hw + (spring.shiftY || 0) * turn;
+        var turn = hw * smooth01((0.8 - v.oy / PLATE) / 0.22);
+        var rx = v.ox - PLATE * 0.5;
+        var ry = v.oy - PLATE * 0.8;
+        v.x = v.ox + mx * hw + turn * ((cos - 1) * rx - sin * ry + spring.shiftX);
+        v.y = v.oy + my * hw + turn * (sin * rx + (cos - 1) * ry + spring.shiftY);
       }
     }
   }
@@ -1060,21 +1018,12 @@
     return { p: target + off.p, v: off.v };
   }
 
-  // Rigid lean of the person. While grabbed it follows the pull without
-  // overshooting the aim. On release it uses the skin's overshoot rule.
-  // Reduced motion is critically damped and stays on the home side of the aim.
-  // The hinge is the bottom of the person once a matte is bound, so the head
-  // moves more than the shoulders and the shoulders still move.
+  // Rotation and translation share the same slow neck spring.
   function stepHeadShift(spring, dt) {
-    var targetX = 0;
-    var targetY = 0;
-    if (spring.grabbing) {
-      var aim = headShiftAim(spring.pullX, spring.pullY);
-      targetX = aim.x;
-      targetY = aim.y;
-    }
-    var wn = spring.reduced ? 2 * Math.PI * 6 : SPRING_WN;
-    var zeta = spring.reduced || spring.grabbing ? 1 : SPRING_ZETA;
+    var targetX = spring.grabbing ? 0.06 * spring.pullX : 0;
+    var targetY = spring.grabbing ? 0.08 * spring.pullY : 0;
+    var wn = 2 * Math.PI * (spring.reduced ? 6 : 1.25);
+    var zeta = spring.reduced ? 1 : 0.2;
     var sx = dampShift(spring.shiftX || 0, spring.shiftVx || 0, targetX, dt, wn, zeta);
     var sy = dampShift(spring.shiftY || 0, spring.shiftVy || 0, targetY, dt, wn, zeta);
     spring.shiftX = sx.p;
@@ -1109,7 +1058,7 @@
       ? engine.getPointer()
       : { x: PLATE / 2, y: PLATE / 2, onFace: false, type: "mouse" };
     var grabbing = !!(engine.isGrabbing && engine.isGrabbing());
-    var cells = spring.cells;
+    var cells = CELLS_PER_IMAGE;
     var toX;
     var toY;
     var hvx = 0;
@@ -1160,19 +1109,6 @@
     }
 
     stepHeadShift(spring, elapsed);
-    if (grabbing && grip > 0) {
-      var grabW =
-        spring.hasMatte && spring.weight
-          ? sampleGrid(spring, spring.weight, spring.grabX, spring.grabY)
-          : headWeight(spring.grabX, spring.grabY);
-      var grabTurn = grabW * bodyLever(spring, spring.grabY);
-      var cellPx = PLATE / cells;
-      toX -= ((spring.shiftX || 0) * grabTurn) / cellPx;
-      toY -= ((spring.shiftY || 0) * grabTurn) / cellPx;
-      hvx = (toX - spring.handX) / elapsed;
-      hvy = (toY - spring.handY) / elapsed;
-    }
-
     var fromX = spring.handX;
     var fromY = spring.handY;
     sheetSimulate(spring, elapsed, fromX, fromY, toX, toY, hvx, hvy, radius, grip);
@@ -1348,7 +1284,7 @@
           .catch(function () {}),
       );
     });
-    var gazeP = null;
+    var gazeP = Promise.resolve(null);
     if (manifest.gaze && manifest.gaze.sheet) {
       gazeP = fetchFn(resolveUrl(manifest.gaze.sheet, manifestUrl))
         .then(function (r) {
@@ -1391,12 +1327,12 @@
     var vs =
       "attribute vec2 a_pos;attribute vec2 a_uv;varying vec2 v_uv;void main(){v_uv=a_uv;gl_Position=vec4(a_pos,0.0,1.0);}";
     // v_uv is ox/PLATE, oy/PLATE, y down: the same UV as the photo.
-    // Person luminance shows the photo. Background luminance shows white.
+    // Composite the matte over previously drawn skin when the warped mesh folds.
     var fsMix =
       "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex0;uniform sampler2D u_tex1;uniform sampler2D u_matte;uniform float u_mix;" +
       "void main(){vec4 photo=mix(texture2D(u_tex0,v_uv),texture2D(u_tex1,v_uv),u_mix);" +
       "float person=texture2D(u_matte,v_uv).r;" +
-      "gl_FragColor=mix(vec4(1.0,1.0,1.0,1.0),photo,person);}";
+      "gl_FragColor=vec4(photo.rgb,photo.a*person);}";
     var fsBlit =
       "precision mediump float;varying vec2 v_uv;uniform sampler2D u_tex;void main(){gl_FragColor=texture2D(u_tex,v_uv);}";
 
@@ -1587,7 +1523,8 @@
         upload(tex0, fromBmp, "a");
         upload(tex1, toBmp, "b");
         gl.viewport(0, 0, canvas.width, canvas.height);
-        gl.disable(gl.BLEND);
+        gl.enable(gl.BLEND);
+        gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.disable(gl.DEPTH_TEST);
         gl.clearColor(1, 1, 1, 1);
         gl.clear(gl.COLOR_BUFFER_BIT);
@@ -1605,6 +1542,7 @@
         bindAttribs();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuf);
         gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0);
+        gl.disable(gl.BLEND);
         if (gazeReady(engine, sample)) drawGaze(engine, now || 0);
       },
       lose: function () {
@@ -1620,9 +1558,26 @@
     var fade = createPlateFade();
     var doc = (canvas && canvas.ownerDocument) || global.document;
     var scratch = doc.createElement("canvas");
-    scratch.width = canvas.width;
-    scratch.height = canvas.height;
+    scratch.width = PLATE;
+    scratch.height = PLATE;
     var sctx = scratch.getContext("2d");
+    var alphaMatte = null;
+    if (sctx && images.matte) {
+      var mask = doc.createElement("canvas");
+      mask.width = PLATE;
+      mask.height = PLATE;
+      var maskCtx = mask.getContext("2d");
+      if (maskCtx) {
+        maskCtx.drawImage(images.matte, 0, 0, PLATE, PLATE);
+        var pixels = maskCtx.getImageData(0, 0, PLATE, PLATE);
+        // The WebP stores opacity in RGB. Canvas masking uses the alpha channel.
+        for (var i = 0; i < pixels.data.length; i += 4) {
+          pixels.data[i + 3] = pixels.data[i];
+        }
+        maskCtx.putImageData(pixels, 0, 0);
+        alphaMatte = mask;
+      }
+    }
 
     function vertexAt(spring, plateX, plateY) {
       var verts = spring.verts;
@@ -1671,81 +1626,25 @@
       }
     }
 
-    function paintMixed(sample, spring, photo) {
+    function paintMixed(sample) {
       var fromBmp = images[sample.from] || images.smile;
       var toBmp = images[sample.to] || images.smile || fromBmp;
-      sctx.setTransform(1, 0, 0, 1, 0, 0);
-      sctx.globalAlpha = 1;
-      sctx.clearRect(0, 0, scratch.width, scratch.height);
+      sctx.clearRect(0, 0, PLATE, PLATE);
       if (sample.mix >= 1 || sample.mix <= 0) {
-        drawSlices(sctx, sample.mix <= 0 ? fromBmp : toBmp, spring, photo);
+        var bmp = sample.mix <= 0 ? fromBmp : toBmp;
+        if (bmp) sctx.drawImage(bmp, 0, 0, PLATE, PLATE);
         return;
       }
-      drawSlices(sctx, fromBmp, spring, photo);
-      sctx.save();
-      sctx.globalAlpha = sample.mix;
-      drawSlices(sctx, toBmp, spring, photo);
-      sctx.restore();
-    }
-
-    var mattePixels = null;
-
-    function readMatte() {
-      if (mattePixels) return mattePixels;
-      var bmp = images.matte;
-      if (!bmp || !doc || !doc.createElement) return null;
-      var sample = doc.createElement("canvas");
-      var w = bmp.width || PLATE;
-      var h = bmp.height || PLATE;
-      sample.width = w;
-      sample.height = h;
-      var g = sample.getContext("2d");
-      if (!g) return null;
-      g.drawImage(bmp, 0, 0, w, h);
-      mattePixels = g.getImageData(0, 0, w, h);
-      return mattePixels;
-    }
-
-    // Person luminance at the source plate pixel. Feather is the matte, not the head ellipse.
-    function matteAlpha(px, py) {
-      var data = readMatte();
-      if (!data) return 1;
-      var x = Math.floor((px / PLATE) * data.width);
-      var y = Math.floor((py / PLATE) * data.height);
-      if (x < 0) x = 0;
-      if (y < 0) y = 0;
-      if (x > data.width - 1) x = data.width - 1;
-      if (y > data.height - 1) y = data.height - 1;
-      return data.data[(y * data.width + x) * 4] / 255;
-    }
-
-    function blitPlate(spring, photo) {
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      if (!images.matte || !readMatte()) {
-        ctx.drawImage(scratch, 0, 0);
-        return;
+      if (fromBmp) sctx.drawImage(fromBmp, 0, 0, PLATE, PLATE);
+      if (toBmp) {
+        sctx.save();
+        sctx.globalAlpha = sample.mix;
+        sctx.drawImage(toBmp, 0, 0, PLATE, PLATE);
+        sctx.restore();
       }
-      for (var y = 0; y < PLATE; y += COARSE) {
-        for (var x = 0; x < PLATE; x += COARSE) {
-          var pw = Math.min(COARSE, PLATE - x);
-          var ph = Math.min(COARSE, PLATE - y);
-          var person = matteAlpha(x + pw / 2, y + ph / 2);
-          if (!(person > 0)) continue;
-          var off = sliceOffset(spring, x, y, pw, ph);
-          var dx0 = photo.x + photo.w * ((x + off.dx) / PLATE);
-          var dy0 = photo.y + photo.h * ((y + off.dy) / PLATE);
-          var dw = photo.w * (pw / PLATE);
-          var dh = photo.h * (ph / PLATE);
-          ctx.globalAlpha = person;
-          ctx.drawImage(scratch, dx0, dy0, dw, dh, dx0, dy0, dw, dh);
-        }
-      }
-      ctx.globalAlpha = 1;
     }
 
-    function drawGaze(engine, photo, now) {
+    function drawGaze(engine, now) {
       if (!images.gazeSheet || !manifest || !manifest.gaze) return;
       var cell = engine.updateGaze(now || Date.now());
       var blits = gazeBlits(manifest, cell);
@@ -1753,17 +1652,7 @@
       var parts = [blits.left, blits.right];
       for (var i = 0; i < parts.length; i++) {
         var b = parts[i];
-        ctx.drawImage(
-          images.gazeSheet,
-          b.sx,
-          b.sy,
-          b.sw,
-          b.sh,
-          photo.x + photo.w * (b.dx / PLATE),
-          photo.y + photo.h * (b.dy / PLATE),
-          photo.w * (b.sw / PLATE),
-          photo.h * (b.sh / PLATE),
-        );
+        sctx.drawImage(images.gazeSheet, b.sx, b.sy, b.sw, b.sh, b.dx, b.dy, b.sw, b.sh);
       }
     }
 
@@ -1771,23 +1660,21 @@
       kind: "2d",
       draw: function (plateKey, engine, spring, now) {
         var photo = photoRect(canvas.width, canvas.height);
-        if (
-          scratch.width !== canvas.width ||
-          scratch.height !== canvas.height
-        ) {
-          scratch.width = canvas.width;
-          scratch.height = canvas.height;
-        }
         var sample = fade.sample(plateKey, engine, now || 0);
-        if (sctx) {
-          paintMixed(sample, spring, photo);
-          blitPlate(spring, photo);
-        } else {
-          ctx.globalAlpha = 1;
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (!sctx) return;
+
+        paintMixed(sample);
+        if (engine && gazeReady(engine, sample)) drawGaze(engine, now);
+        if (alphaMatte) {
+          sctx.save();
+          sctx.globalCompositeOperation = "destination-in";
+          sctx.drawImage(alphaMatte, 0, 0);
+          sctx.restore();
         }
-        if (engine && gazeReady(engine, sample)) drawGaze(engine, photo, now);
+        drawSlices(ctx, scratch, spring, photo);
       },
     };
   }
